@@ -5,17 +5,20 @@ import type { DirectoryEntry, ReaderDocument, ReadingPosition, Session } from ".
 const native = vi.hoisted(() => ({
   invoke: vi.fn(), handlers: new Map<string, (event: { payload: string }) => void>(),
   show: vi.fn(), restore: vi.fn(), capture: vi.fn(), closeRequested: vi.fn(),
+  search: vi.fn(), dispose: vi.fn(), title: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke, isTauri: () => true }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: async (name: string, handler: (event: { payload: string }) => void) => { native.handlers.set(name, handler); return () => {}; } }));
-vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ setTitle: async () => {}, onCloseRequested: native.closeRequested }) }));
+vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ setTitle: native.title, onCloseRequested: native.closeRequested }) }));
 vi.mock("../src/storage-settings", () => ({ StorageSettings: class { activate() {} deactivate() {} } }));
 // 只替换排版和原生边界；真实主窗口控制器、DOM 事件与异步打开流程参与测试。
 vi.mock("../src/reader", () => ({ Reader: class {
   constructor(readonly article: HTMLElement, readonly viewport: HTMLElement) {}
   capturePosition = native.capture;
   restorePosition = native.restore;
+  search = native.search;
+  dispose = native.dispose;
   async show(value: ReaderDocument, painted: () => void) {
     this.article.textContent = value.blocks.join("");
     painted(); await native.show();
@@ -27,6 +30,87 @@ const anchor: ReadingPosition = { position: .5, block: 8, offset: 24, anchorHash
 const article = (revision: number): ReaderDocument => ({
   path, title: "阅读", bytes: 1000, revision, readMs: 1, parseMs: 1, cacheMs: 0, cacheHit: false, cacheError: null,
   blocks: [`正文修订 ${revision}`], blockHashes: [], headings: [], images: [], links: [],
+});
+
+describe("关闭文章的页面与请求边界", () => {
+  const close = () => document.querySelector<HTMLButtonElement>('[data-action="close-document"]')!.click();
+
+  it("从搜索和设置返回统一空状态，清空旧标题、进度及输入，并保留导航历史", async () => {
+    document.querySelector<HTMLButtonElement>('[data-action="search"]')!.click();
+    const input = document.querySelector<HTMLInputElement>("#search-input")!;
+    input.value = "阅读"; input.dispatchEvent(new Event("input", { bubbles: true }));
+    document.querySelector("#search-count")!.textContent = "1 / 8";
+    clickSettings(); await settle(); close(); await settle();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(settingsVisible()).toBe(false);
+    expect(document.querySelector<HTMLElement>("#welcome")!.hidden).toBe(false);
+    expect(document.querySelector<HTMLElement>("#article")!.hidden).toBe(true);
+    expect(document.querySelector<HTMLElement>("#search-bar")!.hidden).toBe(true);
+    expect(input.value).toBe(""); expect(document.querySelector("#search-count")!.textContent).toBe("");
+    expect(native.search).toHaveBeenCalledExactlyOnceWith("");
+    expect(document.querySelector("#read-progress")!.textContent).toBe("—");
+    expect(document.querySelector("#document-name")!.getAttribute("title")).toBeNull();
+    expect(document.querySelector("#outline-list")!.textContent).toContain("打开文章后");
+    expect(document.querySelector("#recent-files")!.textContent).toContain("阅读.md");
+    expect(native.title).toHaveBeenLastCalledWith("MD · Markdown 阅读器");
+    expect(document.activeElement?.id).toBe("reading-pane");
+  });
+
+  it("后台关闭失败时保留当前文章和设置，允许再次关闭", async () => {
+    const original = native.invoke.getMockImplementation()!;
+    native.invoke.mockImplementation((name: string) => name === "close_document" ? Promise.reject(new Error("状态无法保存")) : original(name));
+    clickSettings(); await settle(); close(); await settle();
+    expect(settingsVisible()).toBe(true);
+    expect(document.querySelector("#article")!.textContent).toContain("正文修订 1");
+    expect(document.querySelector("#notice-text")!.textContent).toContain("状态无法保存");
+    expect(native.dispose).not.toHaveBeenCalled();
+    native.invoke.mockImplementation(original); close(); await settle();
+    expect(settingsVisible()).toBe(false); expect(native.dispose).toHaveBeenCalledOnce();
+  });
+
+  it("新文章等待已发出的关闭完成，迟到关闭不清空新文章", async () => {
+    const closing = deferred<void>(); const original = native.invoke.getMockImplementation()!;
+    const next = "H:\\文章\\下一篇.md";
+    native.invoke.mockImplementation((name: string, payload?: { path: string }) => name === "close_document" ? closing.promise
+      : name === "open_document" ? Promise.resolve({ ...article(2), path: payload!.path }) : original(name));
+    close(); await settle();
+    native.handlers.get("open-path")!({ payload: next }); await settle();
+    expect(opens()).toHaveLength(1);
+    closing.resolve(); await settle();
+    expect(opens()).toHaveLength(2);
+    expect(document.querySelector("#document-name")!.textContent).toBe("下一篇.md");
+    expect(document.querySelector<HTMLElement>("#article")!.hidden).toBe(false);
+    expect(native.dispose).not.toHaveBeenCalled();
+  });
+
+  it("关闭尚在保存进度时发起新打开，不再发送过期关闭", async () => {
+    const saving = deferred<void>(); const original = native.invoke.getMockImplementation()!;
+    native.capture.mockReturnValue({ ...anchor, offset: 42 });
+    native.invoke.mockImplementation((name: string) => name === "save_position" ? saving.promise : original(name));
+    close(); await settle(); native.handlers.get("open-path")!({ payload: path }); await settle();
+    saving.resolve(); await settle();
+    expect(native.invoke.mock.calls.filter(([name]) => name === "close_document")).toHaveLength(0);
+    expect(opens()).toHaveLength(2); expect(native.dispose).not.toHaveBeenCalled();
+  });
+
+  it("关闭后迟到的打开结果不能恢复旧文章", async () => {
+    const opening = deferred<ReaderDocument>(); const original = native.invoke.getMockImplementation()!;
+    native.invoke.mockImplementation((name: string) => name === "open_document" ? opening.promise : original(name));
+    native.handlers.get("open-path")!({ payload: path }); await settle(); close(); await settle();
+    opening.resolve(article(2)); await settle();
+    expect(document.querySelector<HTMLElement>("#welcome")!.hidden).toBe(false);
+    expect(document.querySelector("#article")!.textContent).toBe("");
+    expect(native.show).toHaveBeenCalledTimes(1);
+  });
+
+  it("关闭打断启动定位后，旧定位完成不能确认迁移健康", async () => {
+    vi.resetModules(); native.invoke.mockClear(); document.body.innerHTML = '<div id="app"></div>';
+    const restoring = deferred<void>(); native.restore.mockReturnValueOnce(restoring.promise);
+    await import("../src/main"); await settle(); close(); await settle();
+    restoring.resolve(); await settle();
+    expect(native.invoke.mock.calls.filter(([name]) => name === "app_ready")).toHaveLength(0);
+    expect(document.querySelector<HTMLElement>("#welcome")!.hidden).toBe(false);
+  });
 });
 let remoteSession: Session;
 

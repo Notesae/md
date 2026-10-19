@@ -58,6 +58,8 @@ let directoryEpoch = 0;
 let folderBusy = false;
 let session: Session;
 let current: Omit<ReaderDocument, "blocks"> | null = null;
+// 新打开请求等待已发出的关闭 IPC 完成，防止后台迟到的关闭清空新文章。
+let closingDocument: Promise<void> | null = null;
 let settingsOpen = false;
 // 设置页隐藏正文时保留原锚点，文件变化延迟到返回阅读后处理。
 let settingsPosition: ReadingPosition | undefined;
@@ -229,7 +231,9 @@ function renderOutline(): void {
     button.style.setProperty("--level", String(Math.min(heading.level - 1, 3))); button.dataset.heading = heading.id;
     button.onclick = () => { void reader.jumpHeading(heading.id); }; list.append(button);
   }
-  if (!current?.headings.length) list.innerHTML = '<p class="empty-small">这篇文章没有标题目录。</p>';
+  if (!current?.headings.length) list.innerHTML = current
+    ? '<p class="empty-small">这篇文章没有标题目录。</p>'
+    : '<p class="empty-small">打开文章后，<br>在这里找到方向。</p>';
 }
 
 function position(): number { return Math.max(0, Math.min(1, pane.scrollTop / Math.max(1, pane.scrollHeight - pane.clientHeight))); }
@@ -250,6 +254,8 @@ async function openPath(path: string, restore?: ReadingPosition, kind: "open" | 
   healthySessionRequest = 0; positionEpoch++;
   performance.clearMeasures("md:first-paint"); performance.clearMeasures("md:full-text");
   try {
+    await closingDocument?.catch(() => {});
+    if (ticket !== request) return;
     await persistPosition().catch((error) => message(`阅读进度未保存：${String(error)}`, true));
     if (ticket !== request) return;
     document.querySelector("#document-status")!.textContent = "正在打开…"; app.classList.add("opening");
@@ -331,6 +337,37 @@ function toggleSearch(show: boolean): void {
   else { reader.search(""); pane.focus({ preventScroll: true }); }
 }
 
+/** 关闭成功才清理阅读界面；旧关闭不能覆盖此后发起的新打开请求。 */
+function closeDocument(): Promise<void> {
+  if (!current || closingDocument) return closingDocument ?? Promise.resolve();
+  const ticket = ++request;
+  healthySessionRequest = 0; positionEpoch++;
+  clearTimeout(refreshTimer);
+  closingDocument = (async () => {
+    await persistPosition();
+    if (ticket !== request) return;
+    await invoke("close_document");
+    if (ticket !== request) return;
+    if (settingsOpen) toggleSettings(false);
+    clearTimeout(positionTimer); clearTimeout(searchTimer);
+    searchStart = null; restoringPosition = undefined; settingsPosition = undefined; refreshOnReturn = false;
+    const input = document.querySelector<HTMLInputElement>("#search-input")!;
+    input.value = ""; reader.search(""); reader.dispose(); reader.article.replaceChildren(); current = null;
+    document.querySelector<HTMLElement>("#search-bar")!.hidden = true;
+    document.querySelector("#search-count")!.textContent = "";
+    app.classList.remove("opening", "outline-drawer");
+    reader.article.hidden = true; document.querySelector<HTMLElement>("#document-end")!.hidden = true;
+    document.querySelector<HTMLElement>("#welcome")!.hidden = false; document.querySelector<HTMLElement>("#close-document")!.hidden = true;
+    document.querySelector("#document-name")!.textContent = "开始阅读"; document.querySelector("#document-name")!.removeAttribute("title");
+    document.querySelector("#document-description")!.textContent = "本地 Markdown";
+    document.querySelector("#document-status")!.textContent = "准备好开始阅读";
+    document.querySelector("#read-progress")!.textContent = "—"; document.querySelector<HTMLElement>("#progress-fill")!.style.width = "0";
+    if (isTauri()) void getCurrentWindow().setTitle("MD · Markdown 阅读器");
+    renderOutline(); renderRecent(); pane.scrollTop = 0; pane.focus({ preventScroll: true });
+  })().finally(() => { closingDocument = null; });
+  return closingDocument;
+}
+
 /** 工具栏和空状态共用动作，所有打开入口都走同一个授权及请求处理流程。 */
 async function action(name: string): Promise<void> {
   try {
@@ -353,13 +390,7 @@ async function action(name: string): Promise<void> {
     else if (name === "top") pane.scrollTo({ top: 0 });
     else if (name === "dismiss-notice") document.querySelector<HTMLElement>("#notice")!.hidden = true;
     else if (name === "clear-history") { await invoke("clear_history"); await refreshSession(); renderRecent(); renderFolderView(); message("最近记录已清除，原始文章与偏好已保留。"); }
-    else if (name === "close-document") {
-      await persistPosition(); request++; await invoke("close_document"); reader.dispose(); reader.article.replaceChildren(); current = null;
-      reader.article.hidden = true; document.querySelector<HTMLElement>("#document-end")!.hidden = true;
-      document.querySelector<HTMLElement>("#welcome")!.hidden = false; document.querySelector<HTMLElement>("#close-document")!.hidden = true;
-      document.querySelector("#document-name")!.textContent = "开始阅读"; document.querySelector("#document-description")!.textContent = "本地 Markdown";
-      document.querySelector("#document-status")!.textContent = "准备好开始阅读"; renderOutline(); renderRecent();
-    }
+    else if (name === "close-document") await closeDocument();
   } catch (error) { message(String(error), true); }
 }
 
