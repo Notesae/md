@@ -32,6 +32,17 @@ function Get-DefaultValue([string]$Path) {
   return [string](Get-Item -LiteralPath $Path).GetValue('')
 }
 
+# Windows PowerShell 会把 reg.exe 的“找不到项”当成错误记录；键不存在是备份前的正常情况。
+function Invoke-Reg {
+  param([Parameter(ValueFromRemainingArguments = $true)][string[]]$ArgumentList)
+  $previous = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  & reg.exe @ArgumentList *> $null
+  $code = $LASTEXITCODE
+  $ErrorActionPreference = $previous
+  return $code
+}
+
 function Assert-Associated([string]$Executable) {
   foreach ($extension in @('.md', '.markdown', '.mdown')) {
     $progid = Get-DefaultValue "HKCU:\Software\Classes\$extension"
@@ -110,10 +121,8 @@ $shortcuts = @(
 try {
   foreach ($key in $keys) {
     $file = Join-Path $backup (($key -replace '[\\: ]', '_') + '.reg')
-    & reg.exe query $key *> $null
-    if ($LASTEXITCODE -eq 0) {
-      & reg.exe export $key $file /y | Out-Null
-      if ($LASTEXITCODE -ne 0) { throw "无法导出注册表 $key" }
+    if ((Invoke-Reg query $key) -eq 0) {
+      if ((Invoke-Reg export $key $file /y) -ne 0) { throw "无法导出注册表 $key" }
       $savedKeys += [pscustomobject]@{ Key = $key; File = $file; Existed = $true }
     } else { $savedKeys += [pscustomobject]@{ Key = $key; File = $null; Existed = $false } }
   }
@@ -183,10 +192,9 @@ try {
 } finally {
   $restoreErrors = @()
   foreach ($item in $savedKeys) {
-    & reg.exe delete $item.Key /f *> $null
+    [void](Invoke-Reg delete $item.Key /f)
     if ($item.Existed) {
-      & reg.exe import $item.File | Out-Null
-      if ($LASTEXITCODE -ne 0) { $restoreErrors += "无法恢复 $($item.Key)" }
+      if ((Invoke-Reg import $item.File) -ne 0) { $restoreErrors += "无法恢复 $($item.Key)" }
     }
   }
   $shell = New-Object -ComObject WScript.Shell
