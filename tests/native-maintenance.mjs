@@ -6,6 +6,11 @@ import { createServer } from "node:net";
 import path from "node:path";
 import { chromium } from "playwright-core";
 
+if (process.platform !== "win32") {
+  console.error("原生维护需要 Windows 桌面、WebView2，以及完整模式中的原生目录选择器。");
+  process.exit(2);
+}
+
 // 使用真实 WebView2 的 CDP，不用会覆盖用户数据目录的 WebDriver；故障只注入隔离夹具。
 const workspace = process.cwd();
 const base = path.join(workspace, ".runtime/native-maintenance", randomUUID());
@@ -76,6 +81,7 @@ async function attach(context, previousPid, expectedPid, healthy = true) {
   if (healthy) await until(async () => {
     if (context.launchError) throw context.launchError;
     const record = await readRecord(context); const probe = await readJson(path.join(record.root, "temp/startup-probe.json"));
+    // 探针只在健康提交成功后出现；这里仍要继续等待旧目录清理完成。
     if (probe.processId === previousPid || (expectedPid && probe.processId !== expectedPid)) return false;
     context.pids.add(probe.processId); context.pid = probe.processId; context.root = record.root; return true;
   }, "原生窗口未确认就绪");

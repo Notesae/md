@@ -1,5 +1,15 @@
 # 验证记录
 
+## 2026-10-19 阶段 6 可自动化契约（Linux）
+
+- 环境：Linux，Node 22.23.3，Rust 1.99.1。没有 Windows 桌面、WebView2、NSIS 或 tauri-driver，因此没有安装、原生维护或性能成绩。
+- `npm test`：34 项通过。其中原有前端行为仍在，另加性能样本字节数与分位、磁盘写入分类和快照、阶段 6 钩子/CI 契约。
+- `npm run build`：TypeScript 检查与 Vite 生产构建通过。
+- `cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --locked`：35 项通过（缓存 4、解析 6、迁移 12、存储 10、卸载 3）。新增覆盖是健康提交失败不写启动探针、探针落盘时源目录仍在，以及引导单份 16KiB、合计 64KiB。Windows junction 用例有 `cfg(windows)`，这次没有执行。
+- `node tests/performance.mjs --self-check` 与 `node tests/disk-audit.mjs --self-check` 通过。完整采样和 `--capture` 未运行。
+- 未运行：`tests/native-maintenance.mjs`、`tests/startup.mjs`、`tests/storage-audit.mjs`、`tests/performance.mjs` 正式样本、`tests/install-audit.ps1`。这些脚本在非 Windows 上会直接退出，避免把跳过写成通过。
+- 安装钩子增加了 `/DELETEAPPDATA`，并在升级模式保留数据。这是代码和脚本审查，不是安装器编译或安装结果。
+
 ## 2026-10-19 迁移健康确认接续验证（后台）
 
 - 原生维护最终报告在目录选择环节中止后，接续工作先确认原任务空闲并备份已有未提交改动；本轮没有启动真实桌面窗口、选择器、输入或剪贴板测试。

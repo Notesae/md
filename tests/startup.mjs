@@ -4,7 +4,13 @@ import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 
+if (process.platform !== "win32") {
+  console.error("启动采样需要 Windows release 程序。本脚本不在其他系统上宣称成绩。");
+  process.exit(2);
+}
+
 // 每轮完全退出应用及其专属 WebView 会话；首次初始化单列，不混入热文件缓存样本。
+// 探针文件在健康提交成功后才出现。文件里的时刻在进入 app_ready 时采样，不包含旧目录清理。
 const workspace = process.cwd(); const base = path.join(workspace, ".runtime/startup", randomUUID());
 const root = path.join(base, "data"); const bootstrap = path.join(base, "bootstrap");
 const instance = randomUUID(); const article = path.join(base, "articles/sample.md");
@@ -20,7 +26,7 @@ const binary = path.resolve(process.argv[2] ?? ".tools/target/release/md-reader.
 const environment = { ...process.env, MD_STARTUP_PROBE: "1", MD_BOOTSTRAP_DIR: bootstrap, TEMP: path.join(workspace, ".tools/tmp"), TMP: path.join(workspace, ".tools/tmp") };
 for (const key of Object.keys(environment)) if (key.toUpperCase().startsWith("WEBVIEW2_")) delete environment[key];
 const count = Number(process.env.MD_PERF_SAMPLES ?? 30); assert.ok(Number.isInteger(count) && count > 0);
-const result = { binary, base, bytes: 100_000, osFileCache: "warm; no OS cache purge", firstInitialization: null, samples: [], summary: null, result: "running" };
+const result = { binary, base, bytes: 100_000, osFileCache: "warm; no OS cache purge", firstInitialization: null, samples: [], summary: null, specPassed: false, specPassedReason: "至少 30 次且需记录硬件与冷热缓存后，才能对照 SPEC 的启动 P95。脚本不代验收。", result: "running" };
 let app;
 
 async function stop() {
