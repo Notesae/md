@@ -23,7 +23,8 @@ test("阶段 6 的安装钩子、性能口径和 CI 入口保持可执行", asyn
 
   const workflow = await read(".github/workflows/check.yml");
   assert.match(workflow, /dtolnay\/rust-toolchain/);
-  assert.match(workflow, /npm run build:desktop\n/);
+  // 工作副本在 Windows 上可能是 CRLF，不能把换行符本身当成契约。
+  assert.match(workflow, /npm run build:desktop\r?\n/);
   assert.doesNotMatch(workflow, /build:desktop -- --no-bundle/);
   assert.match(workflow, /install-audit\.ps1/);
   assert.match(workflow, /runs-on: ubuntu-latest/);
