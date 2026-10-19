@@ -24,7 +24,7 @@ app.innerHTML = `<div class="app-shell">
     </nav>
   </header>
   <aside class="sidebar" aria-label="文件导航">
-    <section class="nav-section"><div class="section-title"><h2>文件夹</h2><button class="icon-button small" data-action="folder" aria-label="选择文件夹">${icon("folder")}</button></div><div id="file-tree"><p class="empty-small">打开文件夹，<br>让笔记保持原来的秩序。</p></div></section>
+    <section class="nav-section"><div class="section-title"><h2>文件夹</h2><button class="icon-button small" data-action="folder" aria-label="选择文件夹">${icon("folder")}</button></div><div id="folder-controls" class="folder-controls" hidden><label class="sr-only" for="recent-folder">最近文件夹</label><select id="recent-folder"></select><button class="icon-button small" data-action="close-folder" aria-label="关闭文件夹" title="关闭文件夹，保留文章和最近记录">${icon("close")}</button></div><div id="file-tree"><p class="empty-small">打开文件夹，<br>让笔记保持原来的秩序。</p></div></section>
     <section class="nav-section recent-section"><div class="section-title"><h2>最近阅读</h2><span id="recent-count"></span></div><div id="recent-files"></div></section>
     <div class="sidebar-bottom">原文只读，安心阅读。</div>
   </aside>
@@ -53,6 +53,9 @@ const pane = document.querySelector<HTMLElement>("#reading-pane")!;
 const reader = new Reader(document.querySelector<HTMLElement>("#article")!, pane);
 // 界面序号丢弃过期 IPC；后台另有独立取消机制，避免文件切换竞态。
 let request = 0;
+// 目录读取不影响正文请求；切换或关闭后旧列表不能重新挂回界面。
+let directoryEpoch = 0;
+let folderBusy = false;
 let session: Session;
 let current: ReaderDocument | null = null;
 let settingsOpen = false;
@@ -119,6 +122,45 @@ async function refreshSession(): Promise<void> {
   session = await invoke<Session>("get_session");
 }
 
+/** 目录历史只供显式选择；关闭状态独立保留，路径始终通过文本节点显示。 */
+function renderFolderControls(): void {
+  const folders = session.state.folders;
+  document.querySelector<HTMLElement>("#folder-controls")!.hidden = !folders.length;
+  const select = document.querySelector<HTMLSelectElement>("#recent-folder")!;
+  select.replaceChildren();
+  const placeholder = document.createElement("option"); placeholder.value = ""; placeholder.textContent = "选择最近文件夹…"; placeholder.disabled = true; select.append(placeholder);
+  for (const path of folders) {
+    const option = document.createElement("option"); option.value = path; option.textContent = displayPath(path); select.append(option);
+  }
+  select.value = session.state.folderClosed ? "" : folders[0] ?? "";
+  select.title = select.value ? displayPath(select.value) : "选择最近文件夹"; select.disabled = folderBusy;
+  document.querySelector<HTMLButtonElement>('[data-action="close-folder"]')!.disabled = folderBusy || session.state.folderClosed || !folders.length;
+  document.querySelectorAll<HTMLButtonElement>('[data-action="folder"]').forEach((button) => { button.disabled = folderBusy; });
+}
+
+function renderFolderView(): void {
+  const epoch = ++directoryEpoch;
+  renderFolderControls();
+  const tree = document.querySelector<HTMLElement>("#file-tree")!;
+  const path = !session.state.folderClosed && session.state.folders[0];
+  if (path) void renderDirectory(path, tree, epoch);
+  else tree.innerHTML = '<p class="empty-small">尚未打开文件夹。<br>可选择最近目录，或打开其他文件夹。</p>';
+}
+
+/** 串行提交目录变更，状态落盘后更新导航；失败保留可重试的当前目录。 */
+async function folderAction(kind: "pick" | "recent" | "close", path?: string): Promise<void> {
+  if (folderBusy) return;
+  folderBusy = true; renderFolderControls();
+  if (kind === "close") directoryEpoch++;
+  try {
+    const selected = await invoke<string | null>(kind === "pick" ? "pick_directory" : kind === "recent" ? "open_recent_directory" : "close_directory", kind === "recent" ? { path } : {});
+    if (kind === "pick" && !selected) return;
+    await refreshSession(); renderFolderView();
+    if (kind !== "close") changePreferences({ sidebar: true });
+  } catch (error) { renderFolderView(); throw error; }
+  finally { folderBusy = false; renderFolderControls(); }
+}
+
 /** 最近列表最多展示有限条，用户可以显式查看其余有界历史。 */
 function renderRecent(all = false): void {
   const list = document.querySelector<HTMLElement>("#recent-files")!; list.replaceChildren();
@@ -136,10 +178,12 @@ function renderRecent(all = false): void {
 }
 
 /** 每次只查询一层目录；失败保留重试操作，不递归扫描文章。 */
-async function renderDirectory(path: string, container: HTMLElement): Promise<void> {
+async function renderDirectory(path: string, container: HTMLElement, epoch: number): Promise<void> {
   container.textContent = "正在读取…";
   try {
-    const entries = await invoke<DirectoryEntry[]>("read_directory", { path }); container.replaceChildren();
+    const entries = await invoke<DirectoryEntry[]>("read_directory", { path });
+    if (epoch !== directoryEpoch || !container.isConnected) return;
+    container.replaceChildren();
     if (!entries.length) { container.innerHTML = '<p class="empty-small">这里没有 Markdown 文件。</p>'; return; }
     for (const entry of entries) {
       const label = document.createElement("span"); label.textContent = entry.name;
@@ -147,15 +191,16 @@ async function renderDirectory(path: string, container: HTMLElement): Promise<vo
         const details = document.createElement("details"); details.className = "directory";
         const summary = document.createElement("summary"); summary.innerHTML = icon("chevron") + icon("folder"); summary.append(label); summary.title = displayPath(entry.path);
         const children = document.createElement("div"); children.className = "directory-children"; details.append(summary, children);
-        let loaded = false; details.ontoggle = () => { if (details.open && !loaded) { loaded = true; void renderDirectory(entry.path, children); } }; container.append(details);
+        let loaded = false; details.ontoggle = () => { if (details.open && !loaded && epoch === directoryEpoch) { loaded = true; void renderDirectory(entry.path, children, epoch); } }; container.append(details);
       } else {
         const button = document.createElement("button"); button.type = "button"; button.className = "file-row"; button.innerHTML = icon("file"); button.append(label); button.title = displayPath(entry.path);
         button.onclick = () => { void openPath(entry.path); }; container.append(button);
       }
     }
   } catch (error) {
+    if (epoch !== directoryEpoch || !container.isConnected) return;
     container.textContent = `目录不可用：${String(error)}`;
-    const retry = document.createElement("button"); retry.className = "text-button"; retry.textContent = "重试"; retry.onclick = () => { void renderDirectory(path, container); }; container.append(retry);
+    const retry = document.createElement("button"); retry.className = "text-button"; retry.textContent = "重试"; retry.onclick = () => { void renderDirectory(path, container, epoch); }; container.append(retry);
   }
 }
 
@@ -265,7 +310,8 @@ function toggleSearch(show: boolean): void {
 async function action(name: string): Promise<void> {
   try {
     if (name === "open") { const path = await invoke<string | null>("pick_file"); if (path) await openPath(path); }
-    else if (name === "folder") { const path = await invoke<string | null>("pick_directory"); if (path) { await refreshSession(); await renderDirectory(path, document.querySelector<HTMLElement>("#file-tree")!); changePreferences({ sidebar: true }); } }
+    else if (name === "folder") await folderAction("pick");
+    else if (name === "close-folder") await folderAction("close");
     else if (name === "search") toggleSearch(true);
     else if (name === "close-search") toggleSearch(false);
     else if (name === "previous-match") reader.jumpMatch(-1);
@@ -281,7 +327,7 @@ async function action(name: string): Promise<void> {
     else if (name === "settings") { if (!settingsOpen) await persistPosition(); toggleSettings(); }
     else if (name === "top") pane.scrollTo({ top: 0 });
     else if (name === "dismiss-notice") document.querySelector<HTMLElement>("#notice")!.hidden = true;
-    else if (name === "clear-history") { await invoke("clear_history"); await refreshSession(); renderRecent(); message("最近记录已清除，原始文章与偏好已保留。"); }
+    else if (name === "clear-history") { await invoke("clear_history"); await refreshSession(); renderRecent(); renderFolderView(); message("最近记录已清除，原始文章与偏好已保留。"); }
     else if (name === "close-document") {
       await persistPosition(); request++; await invoke("close_document"); reader.dispose(); reader.article.replaceChildren(); current = null;
       reader.article.hidden = true; document.querySelector<HTMLElement>("#document-end")!.hidden = true;
@@ -294,6 +340,10 @@ async function action(name: string): Promise<void> {
 
 app.addEventListener("click", (event) => {
   const target = (event.target as Element).closest<HTMLElement>("[data-action]"); if (target) void action(target.dataset.action!);
+});
+document.querySelector("#recent-folder")!.addEventListener("change", (event) => {
+  const path = (event.target as HTMLSelectElement).value;
+  if (path) void folderAction("recent", path).catch((error) => message(String(error), true));
 });
 document.querySelector("#search-input")!.addEventListener("input", () => {
   searchStart = performance.now();
@@ -382,7 +432,7 @@ async function start(): Promise<void> {
     if (session.state.lastFile) await openPath(session.state.lastFile);
     else { await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))); }
     void confirmReady();
-    if (session.state.folders[0]) void renderDirectory(session.state.folders[0], document.querySelector<HTMLElement>("#file-tree")!);
+    renderFolderView();
   } catch (error) { message(`无法恢复会话：${String(error)}`, true); }
 }
 

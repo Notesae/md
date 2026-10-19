@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ReaderDocument, ReadingPosition, Session } from "../src/types";
+import type { DirectoryEntry, ReaderDocument, ReadingPosition, Session } from "../src/types";
 
 const native = vi.hoisted(() => ({
   invoke: vi.fn(), handlers: new Map<string, (event: { payload: string }) => void>(),
@@ -28,6 +28,7 @@ const article = (revision: number): ReaderDocument => ({
   path, title: "阅读", bytes: 1000, revision, readMs: 1, parseMs: 1, cacheMs: 0, cacheHit: false, cacheError: null,
   blocks: [`正文修订 ${revision}`], blockHashes: [], headings: [], images: [], links: [],
 });
+let remoteSession: Session;
 
 /** 手动控制 IPC 或排版完成时刻，确保竞态每次都以相同顺序发生。 */
 function deferred<T>() {
@@ -50,14 +51,78 @@ beforeEach(async () => {
   vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => { callback(0); return 0; });
   native.capture.mockReturnValue({ ...anchor }); native.restore.mockResolvedValue(undefined); native.show.mockResolvedValue(undefined);
   native.closeRequested.mockResolvedValue(() => {});
-  const session: Session = {
+  remoteSession = {
     root: "H:\\应用数据\\MD", version: "0.1.0", storageNotice: null,
     state: { preferences: { theme: "light", fontSize: 18, contentWidth: 780, sidebar: true, outline: true, persistentCache: true, cacheMib: 256 },
-      recent: [{ path, ...anchor, openedAt: 0 }], folders: [], lastFile: path, window: { width: 1280, height: 860, maximized: false } },
+      recent: [{ path, ...anchor, openedAt: 0 }], folders: [], folderClosed: false, lastFile: path, window: { width: 1280, height: 860, maximized: false } },
   };
-  native.invoke.mockImplementation(async (name: string) => name === "get_session" ? structuredClone(session) : name === "open_document" ? article(1) : null);
+  native.invoke.mockImplementation(async (name: string) => name === "get_session" ? structuredClone(remoteSession) : name === "open_document" ? article(1) : null);
   await import("../src/main"); await settle();
   expect(native.show).toHaveBeenCalledTimes(1); native.restore.mockClear();
+});
+
+const folders = ["H:\\文章", "H:\\其他目录"];
+const selectFolder = async (path: string) => {
+  const select = document.querySelector<HTMLSelectElement>("#recent-folder")!;
+  select.value = path; select.dispatchEvent(new Event("change", { bubbles: true })); await settle();
+};
+
+/** 目录用可控原生返回模拟，正文控制器与导航 DOM 仍由实际入口更新。 */
+async function prepareFolders(read: (path: string) => Promise<DirectoryEntry[]> = async () => []) {
+  remoteSession.state.folders = [...folders];
+  const original = native.invoke.getMockImplementation()!;
+  native.invoke.mockImplementation((name: string, payload?: { path: string }) => {
+    if (name === "pick_directory") return Promise.resolve(folders[0]);
+    if (name === "open_recent_directory") {
+      remoteSession.state.folders = [payload!.path, ...remoteSession.state.folders.filter((item) => item !== payload!.path)];
+      remoteSession.state.folderClosed = false; return Promise.resolve();
+    }
+    if (name === "close_directory") { remoteSession.state.folderClosed = true; return Promise.resolve(); }
+    if (name === "read_directory") return read(payload!.path);
+    if (name === "clear_history") { remoteSession.state.folders = []; remoteSession.state.recent = []; return Promise.resolve(); }
+    return original(name);
+  });
+  document.querySelector<HTMLButtonElement>('[data-action="folder"]')!.click(); await settle();
+}
+
+describe("最近目录与关闭导航", () => {
+  it("切换最近目录仅更换文件树，保留正文", async () => {
+    await prepareFolders(async (path) => [{ path: `${path}\\样例.md`, name: path === folders[0] ? "第一篇.md" : "第二篇.md", directory: false }]);
+    await selectFolder(folders[1]);
+    expect(document.querySelector("#file-tree")!.textContent).toContain("第二篇.md");
+    expect(document.querySelector("#file-tree")!.textContent).not.toContain("第一篇.md");
+    expect(document.querySelector("#article")!.textContent).toContain("正文修订 1");
+    expect(native.show).toHaveBeenCalledTimes(1);
+  });
+
+  it("关闭期间迟到的目录列表不能回填，历史保留并可重新打开", async () => {
+    const pending = deferred<DirectoryEntry[]>();
+    await prepareFolders(async (path) => path === folders[1] ? pending.promise : []);
+    await selectFolder(folders[1]);
+    document.querySelector<HTMLButtonElement>('[data-action="close-folder"]')!.click(); await settle();
+    pending.resolve([{ path: "迟到.md", name: "迟到文章", directory: false }]); await settle();
+    expect(document.querySelector("#file-tree")!.textContent).not.toContain("迟到文章");
+    expect(document.querySelector<HTMLSelectElement>("#recent-folder")!.value).toBe("");
+    expect(document.querySelector<HTMLSelectElement>("#recent-folder")!.options).toHaveLength(3);
+    await selectFolder(folders[1]);
+    expect(document.querySelector("#file-tree")!.textContent).toContain("迟到文章");
+  });
+
+  it("最近目录不可用时保留原导航并提供失败说明", async () => {
+    await prepareFolders(); const original = native.invoke.getMockImplementation()!;
+    native.invoke.mockImplementation((name: string, payload: unknown) => name === "open_recent_directory" ? Promise.reject(new Error("最近目录不可用")) : original(name, payload));
+    await selectFolder(folders[1]);
+    expect(document.querySelector<HTMLSelectElement>("#recent-folder")!.value).toBe(folders[0]);
+    expect(document.querySelector("#notice-text")!.textContent).toContain("最近目录不可用");
+  });
+
+  it("清除记录同步移除目录导航，保持当前正文可读", async () => {
+    await prepareFolders();
+    document.querySelector<HTMLButtonElement>('[data-action="clear-history"]')!.click(); await settle();
+    expect(document.querySelector<HTMLElement>("#folder-controls")!.hidden).toBe(true);
+    expect(document.querySelector("#file-tree .file-row")).toBeNull();
+    expect(document.querySelector("#article")!.textContent).toContain("正文修订 1");
+  });
 });
 
 afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllGlobals(); });

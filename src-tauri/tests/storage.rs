@@ -93,6 +93,57 @@ fn missing_saved_state_is_not_silently_reset() {
     assert!(load_state(temp.path()).is_err());
 }
 
+// 关闭状态跨重启保留；历史只供重新选择，不能重新授予整个旧目录的访问权。
+#[test]
+fn folder_close_and_switch_survive_state_reopening() {
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path().join("data");
+    initialize_root(&data).unwrap();
+    let first = temp.path().join("中文目录");
+    let second = temp.path().join("其他目录");
+    fs::create_dir(&first).unwrap();
+    fs::create_dir(&second).unwrap();
+    let original = first.join("保留.md");
+    fs::write(&original, "原文保持不变").unwrap();
+    let mut state = AppState::default();
+    state.open_folder(first.to_string_lossy().into_owned());
+    state.open_folder(second.to_string_lossy().into_owned());
+    assert!(!state.folder_contains(&original));
+    assert!(state.folder_contains(&second.join("子目录/文章.md")));
+    state.folder_closed = true;
+    save_state(&data, &state).unwrap();
+    let mut restored = load_state(&data).unwrap();
+    assert!(restored.active_folder().is_none());
+    assert_eq!(restored.folders.len(), 2);
+    assert!(!restored.folder_contains(&second.join("文章.md")));
+    restored.open_folder(first.to_string_lossy().into_owned());
+    save_state(&data, &restored).unwrap();
+    assert!(load_state(&data).unwrap().folder_contains(&original));
+    assert_eq!(fs::read_to_string(original).unwrap(), "原文保持不变");
+}
+
+// 升级前缺少关闭字段的记录仍恢复最近目录；同名前缀的相邻目录不属于授权范围。
+#[test]
+fn legacy_folder_state_keeps_bounded_history_and_path_boundaries() {
+    let temp = tempfile::tempdir().unwrap();
+    let first = temp.path().join("notes");
+    let mut state: AppState =
+        serde_json::from_value(serde_json::json!({ "folders": [first] })).unwrap();
+    assert!(state.active_folder().is_some());
+    assert!(!state.folder_contains(&temp.path().join("notes-other/article.md")));
+    for index in 0..30 {
+        state.open_folder(
+            temp.path()
+                .join(format!("目录 {index}"))
+                .to_string_lossy()
+                .into_owned(),
+        );
+    }
+    let latest = state.folders[0].clone();
+    state.open_folder(latest);
+    assert_eq!(state.folders.len(), 20);
+}
+
 // Windows junction 不得使缓存清理走到文章目录，即使根目录标记有效。
 #[cfg(windows)]
 #[test]

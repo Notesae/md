@@ -87,8 +87,34 @@ pub struct AppState {
     pub preferences: Preferences,
     pub recent: Vec<RecentFile>,
     pub folders: Vec<String>,
+    // 目录历史与当前授权分开；关闭后重启也不能自动恢复目录访问。
+    pub folder_closed: bool,
     pub last_file: Option<String>,
     pub window: WindowState,
+}
+
+impl AppState {
+    pub fn active_folder(&self) -> Option<&str> {
+        if self.folder_closed {
+            None
+        } else {
+            self.folders.first().map(String::as_str)
+        }
+    }
+
+    /// 路径由桌面层规范化后再检查，历史目录本身不授予浏览或打开文件的权限。
+    pub fn folder_contains(&self, path: &Path) -> bool {
+        self.active_folder()
+            .is_some_and(|root| path.starts_with(root))
+    }
+
+    /// 显式打开的目录排到历史首位；有界历史保留关闭前的目录，供用户再次选择。
+    pub fn open_folder(&mut self, path: String) {
+        self.folders.retain(|item| item != &path);
+        self.folders.insert(0, path);
+        self.folders.truncate(20);
+        self.folder_closed = false;
+    }
 }
 
 /// 系统配置目录仅保存用于定位自定义数据根的小型记录。

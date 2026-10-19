@@ -166,6 +166,64 @@ try {
   checks.push("已发出的自动刷新返回时保留设置，返回阅读后读取最新正文");
   await script("Array.from(document.querySelectorAll('#file-tree .file-row')).find(button => button.textContent.includes('welcome.md')).click();");
   await until(() => script("return document.querySelector('#document-name').textContent === 'welcome.md';"), "测试后未恢复样例文章");
+  const fixtureDirectory = state.state.folders[0]; const otherDirectory = state.state.folders[1];
+  assert.ok(otherDirectory, "夹具必须包含第二个最近目录");
+  const chooseRecent = async (directory) => {
+    await script("const select = document.querySelector('#recent-folder'); select.value = arguments[0]; select.dispatchEvent(new Event('change', {bubbles:true}));", [directory]);
+    await until(async () => { const current = await invoke("get_session"); return current.state.folders[0] === directory && !current.state.folderClosed; }, "最近目录未切换");
+  };
+  await chooseRecent(otherDirectory);
+  await until(() => script("return document.querySelector('#file-tree').textContent.includes('另一篇.md');"), "最近目录未展示中文文章");
+  assert.equal(await script("return document.querySelector('#document-name').textContent;"), "welcome.md");
+  assert.equal(await script("return document.querySelector('#file-tree').textContent.includes('嵌套.md');"), false);
+  await script("Array.from(document.querySelectorAll('#file-tree details')).find(item => item.querySelector('summary').textContent.includes('子目录')).open = true;");
+  await until(() => script("return document.querySelector('#file-tree').textContent.includes('嵌套.md');"), "子目录没有按需展开");
+  await script("Array.from(document.querySelectorAll('#file-tree details')).find(item => item.querySelector('summary').textContent.includes('空目录')).open = true;");
+  await until(() => script("return Array.from(document.querySelectorAll('#file-tree details')).find(item => item.querySelector('summary').textContent.includes('空目录'))?.textContent.includes('没有 Markdown 文件');"), "空目录没有显示明确状态");
+  const otherEntries = await invoke("read_directory", { path: otherDirectory });
+  const unopened = otherEntries.find((entry) => entry.name === "另一篇.md").path;
+  await assert.rejects(invoke("read_directory", { path: fixtureDirectory }), /未获得授权/);
+  await assert.rejects(invoke("open_recent_directory", { path: root }), /最近记录/);
+  checks.push("最近目录切换、中文路径与按需展开，非当前目录和任意路径不能越权");
+  // 返回已完成扫描的旧列表前先关闭目录，验证真实 IPC 与前端代次同时生效。
+  await script(`const callbacks = window.__TAURI_INTERNALS__.callbacks; const original = callbacks.set;
+    callbacks.set = function(id, callback) {
+      return original.call(this, id, value => {
+        if (!Array.isArray(value) || !value.some(item => item.name === '另一篇.md')) return callback(value);
+        callbacks.set = original;
+        window.__MD_RELEASE_DIRECTORY = () => { delete window.__MD_RELEASE_DIRECTORY; callback(value); };
+      });
+    };`);
+  await chooseRecent(otherDirectory);
+  await until(() => script("return typeof window.__MD_RELEASE_DIRECTORY === 'function';"), "没有捕获在途目录列表");
+  await click('[data-action="close-folder"]');
+  await until(async () => (await invoke("get_session")).state.folderClosed, "目录关闭状态未保存");
+  await script("window.__MD_RELEASE_DIRECTORY();");
+  assert.equal(await script("return document.querySelector('#file-tree').textContent.includes('另一篇.md');"), false);
+  await assert.rejects(invoke("read_directory", { path: otherDirectory }), /已关闭/);
+  await assert.rejects(invoke("open_document", { path: unopened }), /未获得授权/);
+  const revisionBeforeClose = await script("return document.querySelector('#article').dataset.revision;");
+  await script("document.dispatchEvent(new KeyboardEvent('keydown', {key:'F5', bubbles:true, cancelable:true}));");
+  await until(() => script("return document.querySelector('#article').dataset.revision !== arguments[0];", [revisionBeforeClose]), "关闭目录后当前文章无法刷新");
+  assert.equal((await invoke("get_session")).state.folderClosed, true);
+  checks.push("关闭目录撤销浏览及未打开文件权限，丢弃迟到列表，当前正文仍可阅读和刷新");
+  await chooseRecent(otherDirectory);
+  await until(() => script("return document.querySelector('#file-tree .file-row')?.textContent.includes('另一篇.md');"), "关闭后无法重新选择最近目录");
+  await script("Array.from(document.querySelectorAll('#file-tree .file-row')).find(button => button.textContent.includes('另一篇.md')).click();");
+  await until(() => script("return document.querySelector('#document-name').textContent === '另一篇.md';"), "切换目录后无法打开文章");
+  await chooseRecent(fixtureDirectory);
+  await until(() => script("return Array.from(document.querySelectorAll('#file-tree .file-row')).some(button => button.textContent.includes('welcome.md'));"), "无法切回原目录");
+  await script("Array.from(document.querySelectorAll('#file-tree .file-row')).find(button => button.textContent.includes('welcome.md')).click();");
+  await until(() => script("return document.querySelector('#document-name').textContent === 'welcome.md';"), "未恢复阅读样例");
+  await script("const select = document.querySelector('#recent-folder'); select.value = arguments[0]; select.dispatchEvent(new Event('change', {bubbles:true}));", [state.state.folders[2]]);
+  await until(() => script("return document.querySelector('#notice-text').textContent.includes('最近目录不可用');"), "失效最近目录没有报告失败");
+  assert.equal((await invoke("get_session")).state.folders[0], fixtureDirectory);
+  await until(() => script("return document.querySelector('#recent-folder').value === arguments[0];", [fixtureDirectory]), "失败后没有恢复原目录选择");
+  await click('[data-action="dismiss-notice"]');
+  checks.push("空目录与失效历史有明确反馈，失败切换保留原目录");
+  await click('[data-action="close-folder"]');
+  await until(async () => (await invoke("get_session")).state.folderClosed, "重启验证前目录未关闭");
+  checks.push("关闭后从历史重新打开、打开文章并切回原目录");
   await command("POST", `/session/${sessionId}/window/rect`, { width: 800, height: 700 });
   // WebDriver 的窗口尺寸可能只改变 WebView 视口；另行调整真实主窗口以验证布局落盘。
   await invoke("plugin:window|set_size", { label: "main", value: { Logical: { width: 800, height: 700 } } });
@@ -187,6 +245,19 @@ try {
     catch (error) { return /no such window|invalid session id|disconnected/i.test(String(error)); }
   }, "保存完成后主窗口没有实际关闭");
   checks.push("立即关闭时保存合并中的偏好与原生窗口布局，并实际关闭主窗口");
+  await command("DELETE", `/session/${sessionId}`).catch(() => {}); sessionId = undefined;
+  const restarted = await command("POST", "/session", { capabilities: { alwaysMatch: { "tauri:options": { application: binary } } } });
+  sessionId = restarted.sessionId;
+  await until(() => script("return document.querySelector('#document-name')?.textContent === 'welcome.md' && document.querySelector('#recent-folder')?.options.length > 1;"), "真实重启未恢复正文与目录历史");
+  assert.equal((await invoke("get_session")).state.folderClosed, true);
+  assert.equal(await script("return document.querySelector('#recent-folder').value;"), "");
+  assert.equal(await script("return document.querySelector('#file-tree .file-row') !== null;"), false);
+  checks.push("真实重启保留正文、目录历史与关闭状态，不重新授予目录浏览权限");
+  await click('[data-action="settings"]'); await click('[data-action="clear-history"]');
+  await until(() => script("return document.querySelector('#folder-controls').hidden && document.querySelector('#recent-count').textContent === '';"), "清除历史未同步更新目录导航");
+  assert.equal((await invoke("get_session")).state.folders.length, 0);
+  await assert.rejects(invoke("open_recent_directory", { path: fixtureDirectory }), /最近记录/);
+  checks.push("清除历史同步移除最近目录和文件导航，不能利用已清除记录重新授权");
   await writeFile(path.join(report, "desktop-smoke.json"), JSON.stringify({ binary, date: new Date().toISOString(), checks, result: "passed" }, null, 2));
   console.log(JSON.stringify({ result: "passed", checks }, null, 2));
 } catch (error) {

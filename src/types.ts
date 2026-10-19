@@ -14,6 +14,7 @@ export interface AppState {
   preferences: Preferences;
   recent: (ReadingPosition & { path: string; openedAt: number })[];
   folders: string[];
+  folderClosed: boolean;
   lastFile: string | null;
   window: { width: number; height: number; maximized: boolean };
 }

@@ -24,7 +24,6 @@ struct Runtime {
     state: AppState,
     _bootstrap_lock: fs::File,
     allowed_files: HashSet<PathBuf>,
-    folder_roots: Vec<PathBuf>,
     current: Option<Resources>,
     watcher: Option<notify::RecommendedWatcher>,
     bootstrap_path: PathBuf,
@@ -33,6 +32,21 @@ struct Runtime {
 }
 
 impl Runtime {
+    /// 目录关闭仅撤销未打开文件的目录授权，当前文章和有限阅读历史仍可显式恢复。
+    fn can_open(&self, path: &Path) -> bool {
+        self.allowed_files.contains(path)
+            || self.state.folder_contains(path)
+            || self
+                .state
+                .recent
+                .iter()
+                .any(|item| Path::new(&item.path) == path)
+            || self
+                .current
+                .as_ref()
+                .is_some_and(|current| current.path == path)
+    }
+
     /// 仅恢复此前经用户授权的路径；不可用文件保留历史，实际打开时报告原因。
     fn new(root: PathBuf, state: AppState, lock: fs::File, bootstrap_path: PathBuf) -> Self {
         let allowed_files = state
@@ -40,13 +54,11 @@ impl Runtime {
             .iter()
             .map(|item| PathBuf::from(&item.path))
             .collect();
-        let folder_roots = state.folders.iter().map(PathBuf::from).collect();
         Self {
             root,
             state,
             _bootstrap_lock: lock,
             allowed_files,
-            folder_roots,
             current: None,
             watcher: None,
             bootstrap_path,
@@ -76,6 +88,7 @@ struct Tasks {
     parser: Arc<tokio::sync::Semaphore>,
     images: Arc<tokio::sync::Semaphore>,
     storage_generation: Arc<AtomicU64>,
+    folder_generation: Arc<AtomicU64>,
     maintenance: Arc<Mutex<()>>,
 }
 
@@ -141,6 +154,7 @@ async fn pick_file(runtime: tauri::State<'_, SharedRuntime>) -> Result<Option<St
 #[tauri::command]
 async fn pick_directory(
     runtime: tauri::State<'_, SharedRuntime>,
+    tasks: tauri::State<'_, Tasks>,
 ) -> Result<Option<String>, String> {
     let Some(folder) = rfd::AsyncFileDialog::new()
         .set_title("打开 Markdown 文件夹")
@@ -155,16 +169,75 @@ async fn pick_directory(
     if runtime.maintenance {
         return Err("正在准备维护，请等待重新启动。".into());
     }
-    runtime.folder_roots.retain(|p| p != &path);
-    runtime.folder_roots.insert(0, path);
-    runtime.folder_roots.truncate(20);
     let mut next = runtime.state.clone();
-    next.folders.retain(|p| p != &text);
-    next.folders.insert(0, text.clone());
-    next.folders.truncate(20);
+    next.open_folder(text.clone());
     storage::save_state(&runtime.root, &next)?;
     runtime.state = next;
+    tasks.folder_generation.fetch_add(1, Ordering::SeqCst);
     Ok(Some(text))
+}
+
+/// 最近目录必须来自已保存记录，位置变化或失效时要求重新选择，不能扩展到任意路径。
+#[tauri::command]
+async fn open_recent_directory(
+    path: String,
+    runtime: tauri::State<'_, SharedRuntime>,
+    tasks: tauri::State<'_, Tasks>,
+) -> Result<(), String> {
+    let runtime = runtime.inner().clone();
+    let generation = tasks.folder_generation.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        {
+            let runtime = runtime.lock().map_err(|_| "状态不可用")?;
+            if !runtime.state.folders.contains(&path) {
+                return Err("目录不在最近记录中，请通过打开文件夹重新选择。".into());
+            }
+        }
+        let canonical =
+            fs::canonicalize(&path).map_err(|e| format!("最近目录不可用，请重新选择：{e}"))?;
+        if !canonical.is_dir()
+            || dunce::simplified(&canonical) != dunce::simplified(Path::new(&path))
+        {
+            return Err("目录位置已改变，请通过打开文件夹重新选择。".into());
+        }
+        let mut runtime = runtime.lock().map_err(|_| "状态不可用")?;
+        if runtime.maintenance || !runtime.state.folders.contains(&path) {
+            return Err("目录记录或维护状态已改变，请重试。".into());
+        }
+        let mut next = runtime.state.clone();
+        next.folders.retain(|item| item != &path);
+        next.open_folder(canonical.to_string_lossy().into_owned());
+        storage::save_state(&runtime.root, &next)?;
+        runtime.state = next;
+        generation.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 关闭仅撤销目录授权与在途列表，不关闭正文，也不删除目录或最近记录。
+#[tauri::command]
+async fn close_directory(
+    runtime: tauri::State<'_, SharedRuntime>,
+    tasks: tauri::State<'_, Tasks>,
+) -> Result<(), String> {
+    let runtime = runtime.inner().clone();
+    let generation = tasks.folder_generation.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut runtime = runtime.lock().map_err(|_| "状态不可用")?;
+        if runtime.maintenance {
+            return Err("正在准备维护，请等待重新启动。".into());
+        }
+        let mut next = runtime.state.clone();
+        next.folder_closed = true;
+        storage::save_state(&runtime.root, &next)?;
+        runtime.state = next;
+        generation.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// 目录查询仅列一层并在后台排序，不读取文章正文。
@@ -179,20 +252,32 @@ struct DirectoryEntry {
 async fn read_directory(
     path: String,
     runtime: tauri::State<'_, SharedRuntime>,
+    tasks: tauri::State<'_, Tasks>,
 ) -> Result<Vec<DirectoryEntry>, String> {
     let runtime = runtime.inner().clone();
+    let generation = tasks.folder_generation.clone();
+    let ticket = generation.load(Ordering::SeqCst);
     tauri::async_runtime::spawn_blocking(move || {
+        let root = {
+            let runtime = runtime.lock().map_err(|_| "状态不可用")?;
+            runtime
+                .state
+                .active_folder()
+                .map(PathBuf::from)
+                .ok_or("文件夹已关闭，请先打开文件夹。")?
+        };
+        if !Path::new(&path).starts_with(&root) {
+            return Err("目录未获得授权，请先打开对应的文件夹。".into());
+        }
         let path = fs::canonicalize(path).map_err(|e| e.to_string())?;
-        let roots = runtime
-            .lock()
-            .map_err(|_| "状态不可用")?
-            .folder_roots
-            .clone();
-        if !roots.iter().any(|root| path.starts_with(root)) {
+        if !path.starts_with(&root) {
             return Err("目录未获得授权，请先通过打开文件夹选择。".into());
         }
         let mut entries = Vec::new();
         for entry in fs::read_dir(&path).map_err(|e| e.to_string())? {
+            if generation.load(Ordering::SeqCst) != ticket {
+                return Err("文件夹已切换或关闭。".into());
+            }
             let entry = entry.map_err(|e| e.to_string())?;
             let kind = entry.file_type().map_err(|e| e.to_string())?;
             if kind.is_symlink() || (!kind.is_dir() && !document::is_markdown(&entry.path())) {
@@ -201,7 +286,7 @@ async fn read_directory(
             let Ok(real) = fs::canonicalize(entry.path()) else {
                 continue;
             };
-            if !roots.iter().any(|root| real.starts_with(root)) {
+            if !real.starts_with(&root) {
                 continue;
             }
             entries.push(DirectoryEntry {
@@ -215,6 +300,9 @@ async fn read_directory(
                 .cmp(&a.directory)
                 .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
         });
+        if generation.load(Ordering::SeqCst) != ticket {
+            return Err("文件夹已切换或关闭。".into());
+        }
         Ok(entries)
     })
     .await
@@ -235,12 +323,7 @@ async fn open_document(
         if runtime.maintenance {
             return Err("正在准备维护，请等待重新启动。".into());
         }
-        if !runtime.allowed_files.contains(&path)
-            && !runtime
-                .folder_roots
-                .iter()
-                .any(|root| path.starts_with(root))
-        {
+        if !runtime.can_open(&path) {
             return Err("文件未获得授权，请先通过选择器、拖放或命令行打开。".into());
         }
     }
@@ -279,6 +362,10 @@ async fn open_document(
             return Err("打开请求已取消。".into());
         }
         let mut runtime = runtime.lock().map_err(|_| "状态不可用")?;
+        // 读取期间可能关闭或切换目录；提交前重新核验，不能恢复已撤销的目录授权。
+        if runtime.maintenance || !runtime.can_open(&path) {
+            return Err("文件授权已改变，请重新打开文章或文件夹。".into());
+        }
         let text = path.to_string_lossy().into_owned();
         let saved = runtime
             .state
@@ -798,8 +885,12 @@ async fn retry_storage_cleanup(
 
 /// 清除历史不删除原文或偏好，并移除上次打开入口。
 #[tauri::command]
-async fn clear_history(runtime: tauri::State<'_, SharedRuntime>) -> Result<(), String> {
+async fn clear_history(
+    runtime: tauri::State<'_, SharedRuntime>,
+    tasks: tauri::State<'_, Tasks>,
+) -> Result<(), String> {
     let runtime = runtime.inner().clone();
+    let generation = tasks.folder_generation.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let mut runtime = runtime.lock().map_err(|_| "状态不可用")?;
         if runtime.maintenance {
@@ -811,6 +902,8 @@ async fn clear_history(runtime: tauri::State<'_, SharedRuntime>) -> Result<(), S
         next.last_file = None;
         storage::save_state(&runtime.root, &next)?;
         runtime.state = next;
+        runtime.allowed_files.clear();
+        generation.fetch_add(1, Ordering::SeqCst);
         Ok(())
     })
     .await
@@ -1022,6 +1115,7 @@ pub fn run() {
                 parser: Arc::new(tokio::sync::Semaphore::new(1)),
                 images: Arc::new(tokio::sync::Semaphore::new(2)),
                 storage_generation: Arc::new(AtomicU64::new(0)),
+                folder_generation: Arc::new(AtomicU64::new(0)),
                 maintenance: Arc::new(Mutex::new(())),
             });
             let window =
@@ -1084,6 +1178,8 @@ pub fn run() {
             get_session,
             pick_file,
             pick_directory,
+            open_recent_directory,
+            close_directory,
             read_directory,
             open_document,
             read_image,

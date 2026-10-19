@@ -16,6 +16,27 @@ fn main() -> Result<(), String> {
     state
         .folders
         .push(article.parent().unwrap().to_string_lossy().into_owned());
+    // 第二个最近目录只含生成夹具，验证中文路径、按需展开与关闭，不写原始样例。
+    let other = base.join("folders/另一个目录");
+    fs::create_dir_all(other.join("子目录")).map_err(|e| e.to_string())?;
+    fs::create_dir_all(other.join("空目录")).map_err(|e| e.to_string())?;
+    fs::write(
+        other.join("另一篇.md"),
+        "# 另一篇文章\n\n关闭目录保留正文。\n",
+    )
+    .map_err(|e| e.to_string())?;
+    fs::write(other.join("子目录/嵌套.md"), "# 按需展开\n").map_err(|e| e.to_string())?;
+    state.folders.push(
+        fs::canonicalize(other)
+            .map_err(|e| e.to_string())?
+            .to_string_lossy()
+            .into_owned(),
+    );
+    state.folders.push(
+        base.join("folders/已移除目录")
+            .to_string_lossy()
+            .into_owned(),
+    );
     storage::save_state(&root, &state)?;
     storage::save_bootstrap(
         &location.join("bootstrap.json"),
