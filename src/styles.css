@@ -95,7 +95,8 @@ kbd { font: 10px "Segoe UI", sans-serif; opacity: .8; margin-left: 16px; border:
 .opening #document-status { color: var(--accent); }
 /* 正文不使用卡片容器；块级延迟排版保留 DOM，从而支持跨块复制和搜索。 */
 .prose { max-width: calc(var(--body-width) + 96px); margin: 0 auto; padding: 36px 48px 12px; font-size: var(--body-size); line-height: 1.95; font-family: "Palatino Linotype", "Book Antiqua", "Microsoft YaHei", serif; overflow-wrap: anywhere; }
-.md-block { content-visibility: auto; contain-intrinsic-size: auto 100px; display: flow-root; }
+.md-chunk { content-visibility: auto; contain-intrinsic-size: auto 1500px; }
+.md-block { display: flow-root; }
 .prose h1, .prose h2, .prose h3, .prose h4, .prose h5, .prose h6 { font-family: "Palatino Linotype", "SimSun", serif; font-weight: 600; line-height: 1.5; color: var(--ink); scroll-margin-top: 34px; text-wrap: pretty; }
 .prose h1 { font-size: 2em; margin: 24px 0 26px; letter-spacing: .02em; }
 .prose h2 { font-size: 1.45em; margin: 34px 0 16px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }

@@ -420,26 +420,7 @@ pub fn retry_cleanup(path: &Path) -> Result<Bootstrap, String> {
         return Err("无法核验残留归属，已保留目录。".into());
     }
     wait_for_sessions(&[], &old.join("webview"))?;
-    for entry in fs::read_dir(&old).map_err(|e| e.to_string())? {
-        let name = entry.map_err(|e| e.to_string())?.file_name();
-        if name != "owner.json"
-            && !storage::MANAGED_DIRECTORIES
-                .iter()
-                .any(|directory| name == *directory)
-        {
-            return Err("旧目录包含非应用文件，已保留，请检查后重试。".into());
-        }
-    }
-    storage::tree_bytes(&old, &|| false)?;
-    for directory in storage::MANAGED_DIRECTORIES {
-        let child = old.join(directory);
-        if child.exists() {
-            fs::remove_dir_all(child)
-                .map_err(|e| format!("旧目录仍被占用，已保留残留记录：{e}"))?;
-        }
-    }
-    fs::remove_file(old.join("owner.json")).map_err(|e| e.to_string())?;
-    fs::remove_dir(old).map_err(|e| e.to_string())?;
+    storage::remove_owned_root(&old, residual.instance_id)?;
     record.pending_cleanup = None;
     record.notice = Some("数据迁移已完成，旧应用目录已清理。".into());
     storage::save_bootstrap(path, &record)?;

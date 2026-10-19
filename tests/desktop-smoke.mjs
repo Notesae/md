@@ -90,6 +90,8 @@ try {
   await until(() => script("return !document.querySelector('#settings').hidden;"), "设置未打开");
   await until(() => script("return document.querySelector('#storage-status')?.textContent.includes('总占用');"), "存储分类统计没有完成");
   await screenshot("settings");
+  await script("document.querySelector('#storage-controls').scrollIntoView({block:'start'});");
+  await screenshot("settings-storage");
   assert.ok(await script("return document.querySelector('#data-root').textContent.length > 0;"));
   checks.push("同窗口设置、深色主题与实际数据位置");
   const storageBefore = await invoke("get_storage_info");
@@ -144,6 +146,21 @@ try {
   checks.push("设置页期间文件变化延迟刷新并保留原阅读锚点");
   await script("Array.from(document.querySelectorAll('#file-tree .file-row')).find(button => button.textContent.includes('welcome.md')).click();");
   await until(() => script("return document.querySelector('#document-name').textContent === 'welcome.md';"), "测试后未恢复样例文章");
+  await command("POST", `/session/${sessionId}/window/rect`, { width: 800, height: 700 });
+  await screenshot("narrow");
+  await click('[data-action="outline"]');
+  assert.ok(await script("const outline = document.querySelector('.outline'); return getComputedStyle(outline).display !== 'none' && outline.getBoundingClientRect().right <= innerWidth;"));
+  await screenshot("narrow-outline");
+  checks.push("800 像素窄窗口目录面板可打开且无水平溢出");
+  await click('[data-action="outline"]');
+  // 在 180ms 合并窗口内立即关闭，验证最后一次修改仍由关闭协议保存。
+  await click('[data-action="settings"]');
+  await script("const input = document.querySelector('#font-setting'); input.value = '20'; input.dispatchEvent(new Event('input', {bubbles:true})); setTimeout(() => window.__TAURI_INTERNALS__.invoke('plugin:window|close', {label:'main'}), 0);");
+  await until(async () => {
+    const final = JSON.parse(await readFile(path.join(state.root, "state/preferences.json"), "utf8"));
+    return final.preferences.fontSize === 20 && final.window.width === 800;
+  }, "关闭前最后一次偏好或窗口布局未保存");
+  checks.push("立即关闭窗口时保存尚在合并中的偏好与窗口布局");
   await writeFile(path.join(report, "desktop-smoke.json"), JSON.stringify({ binary, date: new Date().toISOString(), checks, result: "passed" }, null, 2));
   console.log(JSON.stringify({ result: "passed", checks }, null, 2));
 } catch (error) {

@@ -12,3 +12,4 @@ target/
 *.tsbuildinfo
 src-tauri/gen/
 output/
+fixtures/_perf-*.md

@@ -14,7 +14,7 @@ use std::{
         atomic::{AtomicU64, Ordering},
         Arc, Mutex,
     },
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
@@ -58,6 +58,9 @@ impl Runtime {
 
 /// IPC 只持有一份必要状态，耗时读盘与解析不持有此锁。
 type SharedRuntime = Arc<Mutex<Runtime>>;
+
+/// 启动探针仅在显式环境开关启用时写一份有界临时记录，用于真实进程启动计时。
+struct StartupTiming(Instant);
 
 /// 桌面只保留当前文章的资源授权，正文 HTML 发送后即可释放。
 struct Resources {
@@ -726,13 +729,25 @@ async fn app_ready(
     app: tauri::AppHandle,
     runtime: tauri::State<'_, SharedRuntime>,
     tasks: tauri::State<'_, Tasks>,
+    startup: tauri::State<'_, StartupTiming>,
 ) -> Result<Option<String>, String> {
+    let probe = std::env::var_os("MD_STARTUP_PROBE").map(|_| serde_json::json!({
+        "processId": std::process::id(), "elapsedMs": startup.inner().0.elapsed().as_secs_f64() * 1000.0,
+        "readyAtUnixMs": SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis()
+    }));
     let runtime = runtime.inner().clone();
     let maintenance = tasks.maintenance.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let _maintenance = maintenance.lock().map_err(|_| "维护锁不可用")?;
         let (path, migrated) = {
             let mut runtime = runtime.lock().map_err(|_| "状态不可用")?;
+            if let Some(probe) = probe {
+                // 单个固定文件覆盖，不在标准引导目录积累日志；探针失败不影响阅读。
+                let _ = fs::write(
+                    runtime.root.join("temp/startup-probe.json"),
+                    probe.to_string(),
+                );
+            }
             let path = runtime.bootstrap_path.clone();
             let record = storage::load_bootstrap(&path)?;
             let migrated = record.migration.is_some();
@@ -937,7 +952,23 @@ fn bootstrap() -> Result<Option<Runtime>, String> {
 
 /// 单实例插件先注册，随后完成存储引导，最后用用户目录创建唯一 WebView。
 pub fn run() {
+    // NSIS 勾选清理后同步调用此入口；普通卸载不会运行它，也不删除任何原文。
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--uninstall-data")) {
+        let location = std::env::var_os("MD_BOOTSTRAP_DIR")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("LOCALAPPDATA").map(|p| PathBuf::from(p).join("MdReader"))
+            });
+        let result = location
+            .ok_or_else(|| "无法确定数据定位目录。".to_owned())
+            .and_then(|location| crate::uninstall::clear_data(&location.join("bootstrap.json")));
+        if let Err(error) = &result {
+            eprintln!("{error}");
+        }
+        std::process::exit(if result.is_ok() { 0 } else { 2 });
+    }
     let result = tauri::Builder::default()
+        .manage(StartupTiming(Instant::now()))
         .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
             accept_paths(
                 app,

@@ -61,6 +61,8 @@ let settingsPosition: ReadingPosition | undefined;
 let refreshOnReturn = false;
 let positionTimer = 0;
 let searchTimer = 0;
+// 只保留最后一次输入到可见高亮的耗时，不记录搜索词或文章内容。
+let searchStart: number | null = null;
 let refreshTimer = 0;
 let scrollFrame = 0;
 let noticeTimer = 0;
@@ -181,12 +183,16 @@ async function persistPosition(): Promise<void> {
 async function openPath(path: string, restore?: ReadingPosition): Promise<void> {
   refreshOnReturn = false;
   const ticket = ++request; const start = performance.now();
+  performance.clearMeasures("md:first-paint"); performance.clearMeasures("md:full-text");
   try {
     await persistPosition().catch((error) => message(`阅读进度未保存：${String(error)}`, true));
     if (ticket !== request) return;
     document.querySelector("#document-status")!.textContent = "正在打开…"; app.classList.add("opening");
+    const ipcStart = performance.now();
     const result = await invoke<ReaderDocument>("open_document", { path });
     if (ticket !== request) return;
+    // User Timing 供本机性能验收使用；记录有限数值，不保留路径或原文。
+    const timing = { bytes: result.bytes, readMs: result.readMs, parseMs: result.parseMs, cacheMs: result.cacheMs, cacheHit: result.cacheHit, ipcMs: performance.now() - ipcStart };
     const saved = restore ?? session.state.recent.find((item) => item.path === result.path) ?? { position: 0, block: null, offset: 0, anchorHash: null };
     current = result; if (settingsOpen) toggleSettings(false);
     document.querySelector<HTMLElement>("#welcome")!.hidden = true; reader.article.hidden = false;
@@ -198,10 +204,12 @@ async function openPath(path: string, restore?: ReadingPosition): Promise<void> 
     renderOutline();
     await reader.show(result, () => {
       if (ticket !== request) return;
+      performance.measure("md:first-paint", { start, end: performance.now(), detail: timing });
       app.classList.remove("opening"); document.querySelector("#document-status")!.textContent = `${sizeLabel(result.bytes)} · 首屏 ${(performance.now() - start).toFixed(0)} ms`;
       void confirmReady();
     });
     if (ticket !== request) return;
+    performance.measure("md:full-text", { start, end: performance.now(), detail: timing });
     document.querySelector<HTMLElement>("#document-end")!.hidden = false; await reader.restorePosition(saved);
     await refreshSession(); if (ticket !== request) return;
     renderRecent(); updateProgress();
@@ -282,6 +290,7 @@ app.addEventListener("click", (event) => {
   const target = (event.target as Element).closest<HTMLElement>("[data-action]"); if (target) void action(target.dataset.action!);
 });
 document.querySelector("#search-input")!.addEventListener("input", () => {
+  searchStart = performance.now();
   clearTimeout(searchTimer); searchTimer = window.setTimeout(() => reader.search(document.querySelector<HTMLInputElement>("#search-input")!.value), 40);
 });
 document.querySelector("#search-input")!.addEventListener("keydown", (event) => {
@@ -319,6 +328,11 @@ reader.onHeading = (id) => {
 };
 reader.onSearch = (count, index, truncated) => {
   document.querySelector("#search-count")!.textContent = !document.querySelector<HTMLInputElement>("#search-input")!.value ? "" : count ? `${index + 1} / ${count}${truncated ? "+" : ""}` : "无匹配";
+  const start = searchStart;
+  if (start !== null) requestAnimationFrame(() => requestAnimationFrame(() => {
+    if (searchStart !== start) return;
+    performance.clearMeasures("md:search-painted"); performance.measure("md:search-painted", { start, end: performance.now() }); searchStart = null;
+  }));
 };
 reader.onLink = (index) => {
   if (!current) return;

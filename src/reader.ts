@@ -80,7 +80,8 @@ export class Reader {
       let painted = false;
       while (index < document.blocks.length && epoch === this.epoch) {
         const start = performance.now();
-        const fragment = window.document.createDocumentFragment();
+        // 浏览器按渲染批次跳过离屏布局，避免每个小段都成为独立布局容器。
+        const chunk = window.document.createElement("div"); chunk.className = "md-chunk";
         let bytes = 0;
         do {
           const section = window.document.createElement("section");
@@ -89,10 +90,10 @@ export class Reader {
           section.innerHTML = document.blocks[index];
           bytes += document.blocks[index].length;
           this.prepareBlock(section);
-          fragment.append(section);
+          chunk.append(section);
           index++;
         } while (index < document.blocks.length && performance.now() - start < 5 && bytes < 30_000);
-        this.article.append(fragment);
+        this.article.append(chunk);
         await frame();
         if (!painted && epoch === this.epoch) { await frame(); painted = true; if (epoch === this.epoch) onFirstPaint(); }
       }

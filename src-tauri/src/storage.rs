@@ -1,7 +1,7 @@
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
     fs,
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
 };
 use uuid::Uuid;
@@ -165,12 +165,22 @@ pub fn read_json<T: DeserializeOwned>(path: &Path, limit: u64) -> Result<T, Stri
     if file.metadata().map_err(|e| e.to_string())?.len() > limit {
         return Err(format!("配置文件超过允许大小：{}", path.display()));
     }
-    serde_json::from_reader(file)
+    // serde_json 直接读取 File 会逐字节调用系统读取；限量批读后解析，保留扩容上限。
+    let mut bytes = Vec::new();
+    file.take(limit + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    if bytes.len() as u64 > limit {
+        return Err("数据文件超过允许大小，未继续读取。".into());
+    }
+    serde_json::from_slice(&bytes)
         .map_err(|e| format!("配置损坏，已保留原文件 {}：{e}", path.display()))
 }
 
 /// 在同一目录暂存、同步并原子替换，失败时保持旧文件且自动清除暂存文件。
 pub fn atomic_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
+    // 先序列化再批量写入，避免序列化器的每个短字符串都触发一次磁盘系统调用。
+    let payload = serde_json::to_vec(value).map_err(|e| e.to_string())?;
     let pending = path.with_extension("pending");
     validate_local_path(&pending)?;
     let mut temp = fs::OpenOptions::new()
@@ -179,7 +189,7 @@ pub fn atomic_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
         .write(true)
         .open(&pending)
         .map_err(|e| e.to_string())?;
-    serde_json::to_writer(&mut temp, value).map_err(|e| e.to_string())?;
+    temp.write_all(&payload).map_err(|e| e.to_string())?;
     temp.flush().map_err(|e| e.to_string())?;
     temp.sync_all().map_err(|e| e.to_string())?;
     drop(temp);
@@ -259,6 +269,38 @@ pub fn read_owner(root: &Path) -> Result<Owner, String> {
         return Err("数据目录不属于 MD，或格式版本不受支持。".into());
     }
     Ok(owner)
+}
+
+/// 完整预检专属根；出现陌生条目或重解析点时，删除任何分类前就停止。
+pub fn validate_owned_root(root: &Path, instance: Uuid) -> Result<(), String> {
+    if read_owner(root)?.instance_id != instance {
+        return Err("应用目录归属不匹配，未删除数据。".into());
+    }
+    for entry in fs::read_dir(root).map_err(|e| e.to_string())? {
+        let name = entry.map_err(|e| e.to_string())?.file_name();
+        if name != "owner.json"
+            && !MANAGED_DIRECTORIES
+                .iter()
+                .any(|directory| name == *directory)
+        {
+            return Err("应用目录包含非应用文件，已保留，请检查后重试。".into());
+        }
+    }
+    tree_bytes(root, &|| false)?;
+    Ok(())
+}
+
+/// 仅删除通过全树预检的固定分类；调用方必须先等待所有旧浏览器会话退出。
+pub fn remove_owned_root(root: &Path, instance: Uuid) -> Result<(), String> {
+    validate_owned_root(root, instance)?;
+    for directory in MANAGED_DIRECTORIES {
+        let child = root.join(directory);
+        if child.try_exists().map_err(|e| e.to_string())? {
+            fs::remove_dir_all(child).map_err(|e| format!("目录仍被占用，已保留定位记录：{e}"))?;
+        }
+    }
+    fs::remove_file(root.join("owner.json")).map_err(|e| e.to_string())?;
+    fs::remove_dir(root).map_err(|e| e.to_string())
 }
 
 pub fn load_state(root: &Path) -> Result<AppState, String> {

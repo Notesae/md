@@ -21,6 +21,6 @@
     "shortDescription": "快速、舒适的本地 Markdown 阅读器",
     "category": "Utility",
     "fileAssociations": [{ "ext": ["md", "markdown", "mdown"], "name": "Markdown 文档", "role": "Viewer" }],
-    "windows": { "nsis": { "installMode": "currentUser", "languages": ["SimpChinese", "English"], "displayLanguageSelector": false } }
+    "windows": { "nsis": { "installMode": "currentUser", "languages": ["SimpChinese", "English"], "displayLanguageSelector": false, "installerHooks": "windows/hooks.nsh" } }
   }
 }
