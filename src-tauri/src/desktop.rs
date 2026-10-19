@@ -818,34 +818,31 @@ async fn app_ready(
     tasks: tauri::State<'_, Tasks>,
     startup: tauri::State<'_, StartupTiming>,
 ) -> Result<Option<String>, String> {
-    let probe = std::env::var_os("MD_STARTUP_PROBE").map(|_| serde_json::json!({
-        "processId": std::process::id(), "elapsedMs": startup.inner().0.elapsed().as_secs_f64() * 1000.0,
-        "readyAtUnixMs": SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis()
-    }));
+    // 时刻在界面恢复后采样。文件要等健康提交成功才出现，失败回滚不能被启动脚本当成完成。
+    let probe = std::env::var_os("MD_STARTUP_PROBE").map(|_| {
+        serde_json::json!({
+            "processId": std::process::id(), "elapsedMs": startup.inner().0.elapsed().as_secs_f64() * 1000.0,
+            "readyAtUnixMs": SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis()
+        })
+        .to_string()
+    });
     let runtime = runtime.inner().clone();
     let maintenance = tasks.maintenance.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let _maintenance = maintenance.lock().map_err(|_| "维护锁不可用")?;
         let (path, migrated) = {
             let mut runtime = runtime.lock().map_err(|_| "状态不可用")?;
-            if let Some(probe) = probe {
-                // 单个固定文件覆盖，不在标准引导目录积累日志；探针失败不影响阅读。
-                let _ = fs::write(
-                    runtime.root.join("temp/startup-probe.json"),
-                    probe.to_string(),
-                );
-            }
             let path = runtime.bootstrap_path.clone();
-            let record = storage::load_bootstrap(&path)?;
-            let migrated = record.migration.is_some();
-            if migrated {
-                if let Err(error) = migration::commit_health(&path) {
+            let root = runtime.root.clone();
+            let migrated = storage::load_bootstrap(&path)?.migration.is_some();
+            if let Err(error) = migration::commit_ready(&path, &root, probe.as_deref()) {
+                if migrated {
                     runtime.maintenance = true;
                     runtime.watcher = None;
                     migration::rollback(&path, &error)?;
                     app.request_restart();
-                    return Err(error);
                 }
+                return Err(error);
             }
             (path, migrated)
         };

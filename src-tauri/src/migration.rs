@@ -427,6 +427,19 @@ pub fn retry_cleanup(path: &Path) -> Result<Bootstrap, String> {
     Ok(record)
 }
 
+/// 健康提交成功后才发布启动探针。清理旧目录由调用方在探针之后进行，不计入该时刻。
+pub fn commit_ready(path: &Path, root: &Path, probe: Option<&str>) -> Result<Bootstrap, String> {
+    let record = commit_health(path)?;
+    if let Some(body) = probe {
+        let directory = root.join("temp");
+        // 探针失败不撤销已经成功的健康提交，避免临时目录权限挡住已经恢复的阅读。
+        if fs::create_dir_all(&directory).is_ok() {
+            let _ = fs::write(directory.join("startup-probe.json"), body);
+        }
+    }
+    Ok(record)
+}
+
 /// 窗口呈现并恢复必要状态后才提交健康结果；先保存残留任务，再尝试清理旧目录。
 pub fn commit_health(path: &Path) -> Result<Bootstrap, String> {
     let mut record = storage::load_bootstrap(path)?;
