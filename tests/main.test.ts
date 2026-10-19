@@ -113,6 +113,7 @@ describe("关闭文章的页面与请求边界", () => {
   });
 });
 let remoteSession: Session;
+let narrowViewport: { matches: boolean; addEventListener: ReturnType<typeof vi.fn> };
 
 /** 手动控制 IPC 或排版完成时刻，确保竞态每次都以相同顺序发生。 */
 function deferred<T>() {
@@ -131,7 +132,8 @@ const settle = async () => { for (let index = 0; index < 30; index++) await Prom
 beforeEach(async () => {
   vi.resetModules(); vi.useFakeTimers(); vi.clearAllMocks(); native.handlers.clear();
   document.body.innerHTML = '<div id="app"></div>';
-  vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {} }));
+  narrowViewport = { matches: false, addEventListener: vi.fn() };
+  vi.stubGlobal("matchMedia", (query: string) => query === "(max-width: 950px)" ? narrowViewport : { matches: false, addEventListener() {} });
   vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => { callback(0); return 0; });
   native.capture.mockReturnValue({ ...anchor }); native.restore.mockResolvedValue(undefined); native.show.mockResolvedValue(undefined);
   native.closeRequested.mockResolvedValue(() => {});
@@ -168,6 +170,41 @@ async function prepareFolders(read: (path: string) => Promise<DirectoryEntry[]> 
   });
   document.querySelector<HTMLButtonElement>('[data-action="folder"]')!.click(); await settle();
 }
+
+describe("阅读工具的焦点与可见状态", () => {
+  const outline = () => document.querySelector<HTMLButtonElement>('[data-action="outline"]')!;
+  const drawerVisible = () => document.querySelector("#app")!.classList.contains("outline-drawer");
+
+  it("返回阅读后键盘焦点落在阅读区，保持原锚点", async () => {
+    clickSettings(); await settle(); expect(document.activeElement?.id).toBe("settings-title");
+    document.querySelector<HTMLButtonElement>('.back-button')!.click(); await settle();
+    expect(document.activeElement?.id).toBe("reading-pane");
+    expect(native.restore).toHaveBeenLastCalledWith(anchor);
+  });
+
+  it("小窗口目录的关闭、设置和断点变化同步按钮状态，不改写桌面偏好", async () => {
+    narrowViewport.matches = true;
+    const changedLayout = narrowViewport.addEventListener.mock.calls[0][1]; changedLayout();
+    expect(outline().getAttribute("aria-pressed")).toBe("false");
+    outline().click(); expect(drawerVisible()).toBe(true);
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(drawerVisible()).toBe(false); expect(outline().getAttribute("aria-pressed")).toBe("false");
+    outline().click(); clickSettings(); await settle();
+    expect(drawerVisible()).toBe(false); expect(outline().getAttribute("aria-pressed")).toBe("false");
+    narrowViewport.matches = false; changedLayout();
+    expect(outline().getAttribute("aria-pressed")).toBe("true");
+    expect(native.invoke.mock.calls.filter(([name]) => name === "save_preferences")).toHaveLength(0);
+  });
+
+  it("没有文章时禁用正文搜索，快捷键不能在欢迎页留下空搜索栏", async () => {
+    document.querySelector<HTMLButtonElement>('[data-action="close-document"]')!.click(); await settle();
+    expect(document.querySelector<HTMLButtonElement>('[data-action="search"]')!.disabled).toBe(true);
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "f", ctrlKey: true, bubbles: true }));
+    expect(document.querySelector<HTMLElement>("#search-bar")!.hidden).toBe(true);
+    native.handlers.get("open-path")!({ payload: path }); await settle();
+    expect(document.querySelector<HTMLButtonElement>('[data-action="search"]')!.disabled).toBe(false);
+  });
+});
 
 describe("最近目录与关闭导航", () => {
   it("切换最近目录仅更换文件树，保留正文", async () => {

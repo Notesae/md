@@ -16,7 +16,7 @@ app.innerHTML = `<div class="app-shell">
     <div class="open-actions"><button class="primary" data-action="open">${icon("file")}<span>打开文件</span></button><button class="icon-button" data-action="folder" title="打开文件夹 · Ctrl+Shift+O" aria-label="打开文件夹">${icon("folder")}</button></div>
     <div class="document-name"><span id="document-name">开始阅读</span><span id="document-description">本地 Markdown</span></div>
     <nav class="view-actions" aria-label="阅读工具">
-      <button class="icon-button" data-action="search" title="搜索正文 · Ctrl+F" aria-label="搜索正文">${icon("search")}</button>
+      <button class="icon-button" data-action="search" title="搜索正文 · Ctrl+F" aria-label="搜索正文" disabled>${icon("search")}</button>
       <button class="icon-button" data-action="sidebar" title="文件侧栏" aria-label="切换文件侧栏">${icon("sidebar")}</button>
       <button class="icon-button" data-action="outline" title="文章目录" aria-label="切换文章目录">${icon("outline")}</button>
       <button class="icon-button" data-action="theme" title="切换主题" aria-label="切换主题">${icon("moon")}</button>
@@ -50,6 +50,7 @@ app.innerHTML = `<div class="app-shell">
 </div>`;
 
 const pane = document.querySelector<HTMLElement>("#reading-pane")!;
+const narrowLayout = matchMedia("(max-width: 950px)");
 const reader = new Reader(document.querySelector<HTMLElement>("#article")!, pane);
 // 界面序号丢弃过期 IPC；后台另有独立取消机制，避免文件切换竞态。
 let request = 0;
@@ -129,7 +130,12 @@ function applyPreferences(): void {
   document.querySelector<HTMLInputElement>("#width-setting")!.value = String(p.contentWidth);
   document.querySelector("#width-value")!.textContent = `${p.contentWidth} px`;
   document.querySelector('[data-action="sidebar"]')!.setAttribute("aria-pressed", String(p.sidebar));
-  document.querySelector('[data-action="outline"]')!.setAttribute("aria-pressed", String(p.outline));
+  syncOutlineButton();
+}
+
+/** 小窗口使用临时目录抽屉，按钮反映实际可见性，桌面目录偏好仍单独保留。 */
+function syncOutlineButton(): void {
+  document.querySelector('[data-action="outline"]')!.setAttribute("aria-pressed", String(narrowLayout.matches ? app.classList.contains("outline-drawer") : preferences.snapshot.outline));
 }
 
 /** 合并滑块写入；失败提示持久化状态，不能伪装保存成功。 */
@@ -270,6 +276,7 @@ async function openPath(path: string, restore?: ReadingPosition, kind: "open" | 
     // 正文字符串只交给本次渲染；主界面不额外持有已经构建 DOM 的整篇 HTML。
     const { blocks, ...metadata } = result;
     current = metadata; if (settingsOpen) toggleSettings(false);
+    document.querySelector<HTMLButtonElement>('[data-action="search"]')!.disabled = false;
     document.querySelector<HTMLElement>("#welcome")!.hidden = true; reader.article.hidden = false;
     document.querySelector<HTMLElement>("#close-document")!.hidden = false;
     document.querySelector("#document-name")!.textContent = filename(result.path);
@@ -314,6 +321,7 @@ function toggleSettings(refresh = true): void {
   document.querySelector<HTMLElement>("#welcome")!.hidden = settingsOpen || !!current;
   document.querySelector<HTMLElement>("#document-end")!.hidden = settingsOpen || !current;
   if (settingsOpen) {
+    app.classList.remove("outline-drawer"); syncOutlineButton();
     pane.scrollTop = 0; document.querySelector<HTMLElement>("#settings-title")!.focus();
     void import("./storage-settings").then(({ StorageSettings }) => {
       storageView ??= new StorageSettings(document.querySelector<HTMLElement>("#storage-controls")!, () => preferences.snapshot, changePreferences, () => preferences.flush(), message);
@@ -321,6 +329,7 @@ function toggleSettings(refresh = true): void {
     }).catch((error) => message(`无法打开存储设置：${String(error)}`, true));
   } else {
     storageView?.deactivate();
+    pane.focus({ preventScroll: true });
     const saved = settingsPosition; settingsPosition = undefined;
     if (refresh && refreshOnReturn && current) { refreshOnReturn = false; void openPath(current.path, saved, "refresh"); }
     else if (refresh && saved) {
@@ -331,6 +340,7 @@ function toggleSettings(refresh = true): void {
 }
 
 function toggleSearch(show: boolean): void {
+  if (show && !current) return;
   document.querySelector<HTMLElement>("#search-bar")!.hidden = !show;
   const input = document.querySelector<HTMLInputElement>("#search-input")!;
   if (show) { if (settingsOpen) toggleSettings(); input.focus(); input.select(); }
@@ -356,6 +366,7 @@ function closeDocument(): Promise<void> {
     document.querySelector<HTMLElement>("#search-bar")!.hidden = true;
     document.querySelector("#search-count")!.textContent = "";
     app.classList.remove("opening", "outline-drawer");
+    syncOutlineButton(); document.querySelector<HTMLButtonElement>('[data-action="search"]')!.disabled = true;
     reader.article.hidden = true; document.querySelector<HTMLElement>("#document-end")!.hidden = true;
     document.querySelector<HTMLElement>("#welcome")!.hidden = false; document.querySelector<HTMLElement>("#close-document")!.hidden = true;
     document.querySelector("#document-name")!.textContent = "开始阅读"; document.querySelector("#document-name")!.removeAttribute("title");
@@ -380,9 +391,8 @@ async function action(name: string): Promise<void> {
     else if (name === "next-match") reader.jumpMatch(1);
     else if (name === "sidebar") changePreferences({ sidebar: !preferences.snapshot.sidebar });
     else if (name === "outline") {
-      if (matchMedia("(max-width: 950px)").matches) {
-        const visible = app.classList.toggle("outline-drawer");
-        document.querySelector('[data-action="outline"]')!.setAttribute("aria-pressed", String(visible));
+      if (narrowLayout.matches) {
+        app.classList.toggle("outline-drawer"); syncOutlineButton();
       } else changePreferences({ outline: !preferences.snapshot.outline });
     }
     else if (name === "theme") changePreferences({ theme: document.documentElement.dataset.theme === "dark" ? "light" : "dark" });
@@ -427,10 +437,11 @@ document.addEventListener("keydown", (event) => {
   if (event.ctrlKey && event.key.toLowerCase() === "o") { event.preventDefault(); void action(event.shiftKey ? "folder" : "open"); }
   if (event.ctrlKey && event.key.toLowerCase() === "f") { event.preventDefault(); toggleSearch(true); }
   if (event.ctrlKey && event.key.toLowerCase() === "w") { event.preventDefault(); void action("close-document"); }
-  if (event.key === "Escape") { app.classList.remove("outline-drawer"); if (settingsOpen) toggleSettings(); else toggleSearch(false); }
+  if (event.key === "Escape") { app.classList.remove("outline-drawer"); syncOutlineButton(); if (settingsOpen) toggleSettings(); else toggleSearch(false); }
   if (event.key === "F5" && current) { event.preventDefault(); if (settingsOpen) refreshOnReturn = true; else void openPath(current.path, reader.capturePosition(), "refresh"); }
 });
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { if (session) applyPreferences(); });
+narrowLayout.addEventListener("change", () => { app.classList.remove("outline-drawer"); if (session) syncOutlineButton(); });
 reader.onMessage = message;
 reader.onHeading = (id) => {
   const previous = document.querySelector<HTMLElement>('.outline-link[aria-current="location"]');
