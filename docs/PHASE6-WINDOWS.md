@@ -100,7 +100,7 @@ node tests\startup.mjs .tools\target\release\md-reader.exe
 - `.reports\performance.json` 的 `result` 为 `measured`，`specPassed` 为 `false`。
 - 100KB、1MB、10MB 在持久缓存开和关时都有样本；缓存开启的第一次写入不计入该组。
 - `comparison` 可以显示是否落在 SPEC 目标内，但验收记录还要写 CPU、系统版本、WebView2 版本、分辨率、缩放，并分开冷缓存和热缓存。
-- 1MB 静置后的进程组私有工作集来自 `tests\process-memory.ps1`。WebDriver 会换掉 WebView 用户数据目录，所以 JSON 里的缓存字节只统计应用 `cache\`。
+- 进程组私有工作集来自 `tests\process-memory.ps1`。当前 `after1Mb` 只在重新打开 1MB 后立即取单次样本，没有自动静置；不能直接当作稳态验收。还需固定并记录自然静置时长、采样间隔、完整时间序列和过程峰值，不能取最低点或手动裁剪工作集。WebDriver 会换掉 WebView 用户数据目录，所以 JSON 里的缓存字节只统计应用 `cache\`。
 - 滚动记录帧间隔和超过 50ms 的长任务。
 - `.reports\startup.json` 把第一次初始化单独列出，其后的样本才进入中位和 P95。目标仍是恢复约 100KB 文档时 P95 ≤ 1.5 秒。
 
