@@ -144,6 +144,27 @@ try {
   await new Promise((resolve) => setTimeout(resolve, 300));
   assert.equal(await script("return document.querySelector('.outline-link[aria-current]')?.textContent;"), beforeRefresh.heading);
   checks.push("设置页期间文件变化延迟刷新并保留原阅读锚点");
+  // 只延迟一次真实 IPC 的返回，稳定复现自动刷新已发出后用户进入设置的顺序。
+  await script(`const bridge = window.__TAURI_INTERNALS__; const original = bridge.invoke;
+    bridge.invoke = function(name, args, options) {
+      const pending = original.call(bridge, name, args, options);
+      if (name !== 'open_document') return pending;
+      bridge.invoke = original;
+      return pending.then(value => new Promise(resolve => {
+        window.__MD_RELEASE_REFRESH = () => { delete window.__MD_RELEASE_REFRESH; resolve(value); };
+      }));
+    };`);
+  await appendFile(watched, "\n## 刷新返回竞态验证\n\n迟到结果不应关闭设置。\n");
+  await until(() => script("return typeof window.__MD_RELEASE_REFRESH === 'function';"), "没有捕获待返回的刷新结果");
+  await click('[data-action="settings"]');
+  await until(() => script("return !document.querySelector('#settings').hidden;"), "竞态场景未进入设置");
+  await script("window.__MD_RELEASE_REFRESH();");
+  await until(() => script("return !document.querySelector('#app').classList.contains('opening');"), "迟到刷新没有结束");
+  assert.equal(await script("return document.querySelector('#settings').hidden;"), false, "迟到刷新不能关闭设置");
+  assert.equal(await script("return document.querySelector('#article').textContent.includes('刷新返回竞态验证');"), false);
+  await click('[data-action="settings"]');
+  await until(() => script("return document.querySelector('#article').textContent.includes('刷新返回竞态验证');"), "返回阅读后未重新读取最新文章");
+  checks.push("已发出的自动刷新返回时保留设置，返回阅读后读取最新正文");
   await script("Array.from(document.querySelectorAll('#file-tree .file-row')).find(button => button.textContent.includes('welcome.md')).click();");
   await until(() => script("return document.querySelector('#document-name').textContent === 'welcome.md';"), "测试后未恢复样例文章");
   await command("POST", `/session/${sessionId}/window/rect`, { width: 800, height: 700 });

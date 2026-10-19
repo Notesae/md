@@ -59,6 +59,8 @@ let settingsOpen = false;
 // 设置页隐藏正文时保留原锚点，文件变化延迟到返回阅读后处理。
 let settingsPosition: ReadingPosition | undefined;
 let refreshOnReturn = false;
+// 正文尚在分批渲染时仍使用目标锚点，避免设置页记住渲染过程中的临时位置。
+let restoringPosition: ReadingPosition | undefined;
 let positionTimer = 0;
 let searchTimer = 0;
 // 只保留最后一次输入到可见高亮的耗时，不记录搜索词或文章内容。
@@ -172,7 +174,7 @@ function position(): number { return Math.max(0, Math.min(1, pane.scrollTop / Ma
 
 async function persistPosition(): Promise<void> {
   if (!current || settingsOpen) return;
-  const path = current.path; const progress = reader.capturePosition();
+  const path = current.path; const progress = restoringPosition ?? reader.capturePosition();
   const item = session.state.recent.find((item) => item.path === path);
   if (!item || (item.position === progress.position && item.block === progress.block && item.offset === progress.offset)) return;
   await invoke("save_position", { path, ...progress });
@@ -180,7 +182,7 @@ async function persistPosition(): Promise<void> {
 }
 
 /** 旧请求不能覆盖新文章；首屏、全文展示与读盘解析分别可观测。 */
-async function openPath(path: string, restore?: ReadingPosition): Promise<void> {
+async function openPath(path: string, restore?: ReadingPosition, kind: "open" | "refresh" = "open"): Promise<void> {
   refreshOnReturn = false;
   const ticket = ++request; const start = performance.now();
   performance.clearMeasures("md:first-paint"); performance.clearMeasures("md:full-text");
@@ -191,6 +193,8 @@ async function openPath(path: string, restore?: ReadingPosition): Promise<void> 
     const ipcStart = performance.now();
     const result = await invoke<ReaderDocument>("open_document", { path });
     if (ticket !== request) return;
+    // 请求发出后用户仍可能进入设置；自动刷新不能改变当前页面，返回阅读后重新读取最新内容。
+    if (kind === "refresh" && settingsOpen) { refreshOnReturn = true; return; }
     // User Timing 供本机性能验收使用；记录有限数值，不保留路径或原文。
     const timing = { bytes: result.bytes, readMs: result.readMs, parseMs: result.parseMs, cacheMs: result.cacheMs, cacheHit: result.cacheHit, ipcMs: performance.now() - ipcStart };
     const saved = restore ?? session.state.recent.find((item) => item.path === result.path) ?? { position: 0, block: null, offset: 0, anchorHash: null };
@@ -202,6 +206,7 @@ async function openPath(path: string, restore?: ReadingPosition): Promise<void> 
     document.querySelector("#document-description")!.textContent = `${sizeLabel(result.bytes)} · Markdown`;
     if (isTauri()) void getCurrentWindow().setTitle(`${filename(result.path)} · MD`);
     renderOutline();
+    restoringPosition = saved;
     await reader.show(result, () => {
       if (ticket !== request) return;
       performance.measure("md:first-paint", { start, end: performance.now(), detail: timing });
@@ -210,14 +215,15 @@ async function openPath(path: string, restore?: ReadingPosition): Promise<void> 
     });
     if (ticket !== request) return;
     performance.measure("md:full-text", { start, end: performance.now(), detail: timing });
-    document.querySelector<HTMLElement>("#document-end")!.hidden = false; await reader.restorePosition(saved);
+    document.querySelector<HTMLElement>("#document-end")!.hidden = settingsOpen;
+    if (!settingsOpen) await reader.restorePosition(saved);
     await refreshSession(); if (ticket !== request) return;
     renderRecent(); updateProgress();
     if (result.cacheError) message(`应用缓存未写入，正文仍可阅读：${result.cacheError}`, true);
     if (!document.querySelector<HTMLElement>("#search-bar")!.hidden) reader.search(document.querySelector<HTMLInputElement>("#search-input")!.value);
   } catch (error) {
     if (ticket === request) { message(`无法打开文章：${String(error)}`, true); document.querySelector("#document-status")!.textContent = "打开失败，可重新选择文件"; }
-  } finally { if (ticket === request) app.classList.remove("opening"); }
+  } finally { if (ticket === request) { restoringPosition = undefined; app.classList.remove("opening"); } }
 }
 
 /** 滚动只修改进度和目录状态，避免重建正文；磁盘写入另外合并。 */
@@ -229,7 +235,7 @@ function updateProgress(): void {
 }
 
 function toggleSettings(refresh = true): void {
-  if (!settingsOpen) settingsPosition = current ? reader.capturePosition() : undefined;
+  if (!settingsOpen) settingsPosition = current ? restoringPosition ?? reader.capturePosition() : undefined;
   settingsOpen = !settingsOpen; app.classList.toggle("settings-open", settingsOpen);
   document.querySelector<HTMLElement>("#settings")!.hidden = !settingsOpen; reader.article.hidden = settingsOpen || !current;
   document.querySelector<HTMLElement>("#welcome")!.hidden = settingsOpen || !!current;
@@ -243,7 +249,7 @@ function toggleSettings(refresh = true): void {
   } else {
     storageView?.deactivate();
     const saved = settingsPosition; settingsPosition = undefined;
-    if (refresh && refreshOnReturn && current) { refreshOnReturn = false; void openPath(current.path, saved); }
+    if (refresh && refreshOnReturn && current) { refreshOnReturn = false; void openPath(current.path, saved, "refresh"); }
     else if (refresh && saved) void reader.restorePosition(saved);
   }
 }
@@ -316,7 +322,7 @@ document.addEventListener("keydown", (event) => {
   if (event.ctrlKey && event.key.toLowerCase() === "f") { event.preventDefault(); toggleSearch(true); }
   if (event.ctrlKey && event.key.toLowerCase() === "w") { event.preventDefault(); void action("close-document"); }
   if (event.key === "Escape") { app.classList.remove("outline-drawer"); if (settingsOpen) toggleSettings(); else toggleSearch(false); }
-  if (event.key === "F5" && current) { event.preventDefault(); if (settingsOpen) refreshOnReturn = true; else void openPath(current.path, reader.capturePosition()); }
+  if (event.key === "F5" && current) { event.preventDefault(); if (settingsOpen) refreshOnReturn = true; else void openPath(current.path, reader.capturePosition(), "refresh"); }
 });
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { if (session) applyPreferences(); });
 reader.onMessage = message;
@@ -358,7 +364,7 @@ async function start(): Promise<void> {
       clearTimeout(refreshTimer); refreshTimer = window.setTimeout(() => {
         if (current?.path !== event.payload) return;
         if (settingsOpen) refreshOnReturn = true;
-        else void openPath(current.path, reader.capturePosition());
+        else void openPath(current.path, reader.capturePosition(), "refresh");
       }, 250);
     });
     session = await invoke<Session>("get_session");

@@ -258,7 +258,7 @@ export class Reader {
   /** 优先匹配源块摘要；插入新段时选择最邻近的同内容块，找不到才回退百分比。 */
   async restorePosition(position: ReadingPosition): Promise<void> {
     const epoch = this.epoch; await this.finished;
-    if (!this.current || epoch !== this.epoch) return;
+    if (!this.current || epoch !== this.epoch || this.article.hidden) return;
     let block = position.block;
     if (position.anchorHash && (block === null || this.current.blockHashes[block] !== position.anchorHash)) {
       let nearest: number | null = null;
@@ -270,7 +270,8 @@ export class Reader {
     const section = block === null ? null : this.article.querySelector<HTMLElement>(`[data-block="${block}"]`);
     if (!section) { this.viewport.scrollTop = position.position * (this.viewport.scrollHeight - this.viewport.clientHeight); return; }
     section.scrollIntoView({ block: "start" }); await frame();
-    if (epoch !== this.epoch) return;
+    // 首次定位让出一帧期间可能进入设置，不能再用正文偏移滚动设置页面。
+    if (epoch !== this.epoch || this.article.hidden) return;
     this.viewport.scrollTop += section.getBoundingClientRect().top - this.viewport.getBoundingClientRect().top + position.offset;
   }
 
