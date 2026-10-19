@@ -5,6 +5,7 @@ import { randomUUID, createHash } from "node:crypto";
 import { createServer } from "node:net";
 import path from "node:path";
 import { chromium } from "playwright-core";
+import { saveMaintenanceReport } from "./maintenance-report.mjs";
 
 if (process.platform !== "win32") {
   console.error("原生维护需要 Windows 桌面、WebView2，以及完整模式中的原生目录选择器。");
@@ -38,7 +39,7 @@ async function until(probe, message, timeout = 30_000) {
 }
 async function passed(message) {
   checks.push(message); console.log(`通过：${message}`);
-  await writeFile(path.join(workspace, ".reports/native-maintenance.json"), JSON.stringify(result, null, 2));
+  await saveMaintenanceReport(workspace, result);
 }
 
 /** 每例有独立实例归属、引导与文档；原文位于受管根之外，规范化路径与原生端一致。 */
@@ -234,5 +235,5 @@ finally {
   occupiedSession?.kill();
   await stop(active).catch((error) => { result.result = "failed"; result.shutdownError = String(error); process.exitCode = 1; });
   result.completedAt = new Date().toISOString();
-  await writeFile(path.join(workspace, ".reports/native-maintenance.json"), JSON.stringify(result, null, 2)); console.log(JSON.stringify(result));
+  await saveMaintenanceReport(workspace, result); console.log(JSON.stringify(result));
 }

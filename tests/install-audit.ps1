@@ -10,9 +10,28 @@ $ErrorActionPreference = 'Stop'
 function Assert-SafeRoot([string]$Path) {
   if ($Path -match '\s') { throw "路径不能包含空格，否则 NSIS /D= 不能可靠传递：$Path" }
   $full = [System.IO.Path]::GetFullPath($Path)
-  if (-not $full.EndsWith('\install-audit')) { throw "WorkRoot 必须以 install-audit 结尾，避免清理其他目录：$full" }
+  if (-not $full.EndsWith('\install-audit', [System.StringComparison]::OrdinalIgnoreCase)) { throw "WorkRoot 必须以 install-audit 结尾，避免清理其他目录：$full" }
   $drive = [System.IO.Path]::GetPathRoot($full)
   if ($full.TrimEnd('\') -eq $drive.TrimEnd('\')) { throw "不能把盘符根当作工作目录。" }
+  # 名称不代表归属；已有内容必须保留，失败报告要由操作者检查后再选择新的空目录。
+  if (Test-Path -LiteralPath $full) {
+    if (-not (Test-Path -LiteralPath $full -PathType Container)) { throw "WorkRoot 不是目录：$full" }
+    if (@(Get-ChildItem -LiteralPath $full -Force | Select-Object -First 1).Count -gt 0) {
+      throw "WorkRoot 已有内容，拒绝自动清理：$full"
+    }
+  }
+  # 逐层拒绝 junction / 符号链接，避免随后安装和清理经过别名进入其他目录。
+  $cursor = $full
+  while ($cursor) {
+    if (Test-Path -LiteralPath $cursor) {
+      $item = Get-Item -LiteralPath $cursor -Force
+      if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { throw "WorkRoot 经过重解析点：$cursor" }
+      if (-not $item.PSIsContainer) { throw "WorkRoot 的父路径不是目录：$cursor" }
+    }
+    $parent = [System.IO.Path]::GetDirectoryName($cursor)
+    if ($parent -eq $cursor) { break }
+    $cursor = $parent
+  }
   return $full
 }
 
@@ -153,7 +172,6 @@ try {
       $shortcutBackup += [pscustomobject]@{ Path = $shortcut; Backup = $dest }
     }
   }
-  if (Test-Path -LiteralPath $WorkRoot) { Remove-Item -LiteralPath $WorkRoot -Recurse -Force }
   New-Item -ItemType Directory -Force -Path $installDir | Out-Null
   # 只隔离这个安装进程看到的配置和临时目录，不改用户级环境变量。
   $env:LOCALAPPDATA = Join-Path $WorkRoot 'local'
