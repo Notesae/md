@@ -16,7 +16,7 @@ required-features = ["desktop"]
 
 [features]
 default = ["desktop"]
-desktop = ["dep:tauri", "dep:tauri-build", "dep:rfd", "dep:tauri-plugin-single-instance", "dep:notify", "dep:open"]
+desktop = ["dep:tauri", "dep:tauri-build", "dep:rfd", "dep:tauri-plugin-single-instance", "dep:notify", "dep:open", "dep:tokio"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [], optional = true }
@@ -28,11 +28,13 @@ tempfile = "3"
 uuid = { version = "1", features = ["v4", "serde"] }
 fs2 = "0.4"
 pulldown-cmark = "0.13"
+percent-encoding = "2"
 tauri = { version = "2", features = [], optional = true }
 rfd = { version = "0.15", optional = true }
 tauri-plugin-single-instance = { version = "2", optional = true }
 notify = { version = "8", optional = true }
 open = { version = "5", optional = true }
+tokio = { version = "1", features = ["sync"], optional = true }
 
 [profile.release]
 codegen-units = 1

@@ -29,6 +29,8 @@ jobs:
         run: npm run desktop -- fmt -- --check
       - name: Frontend typecheck and production build
         run: npm run build
+      - name: Frontend behavior tests
+        run: npm test
       - name: Storage and document core tests
         run: npm run test:core -- --locked
       - name: Desktop compilation

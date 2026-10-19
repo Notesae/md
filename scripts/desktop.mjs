@@ -6,6 +6,9 @@ import { fileURLToPath } from "node:url";
 // 为子进程集中配置工作盘工具链、下载和临时目录，不修改用户的全局环境。
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const env = { ...process.env };
+// Windows 的原始变量可能名为 Path；普通对象大小写敏感，统一后避免丢失系统命令路径。
+for (const key of Object.keys(env)) if (key.toLowerCase() === "path") delete env[key];
+env.PATH = process.env.PATH ?? "";
 const tools = path.join(root, ".tools");
 for (const folder of ["tmp", "cargo", "rustup", "target"]) mkdirSync(path.join(tools, folder), { recursive: true });
 if (existsSync(path.join(tools, "cargo", "bin", "cargo.exe"))) {
@@ -19,11 +22,17 @@ env.TEMP = env.TMP = path.join(tools, "tmp");
 // MSVC 的头文件和库变量仅用于本次构建；标准安装由 rustc 自行发现。
 const vcvars = path.join(tools, "BuildTools", "VC", "Auxiliary", "Build", "vcvars64.bat");
 if (process.platform === "win32" && existsSync(vcvars)) {
-  const result = spawnSync("cmd.exe", ["/d", "/s", "/c", `""${vcvars}" >nul && set"`], { encoding: "utf8", env });
-  if (result.status !== 0) { process.stderr.write(result.stderr); process.exit(result.status ?? 1); }
+  const result = spawnSync("cmd.exe", ["/d", "/s", "/c", `""${vcvars}" >nul && set"`], { encoding: "utf8", env, windowsVerbatimArguments: true });
+  if (result.status !== 0) {
+    process.stderr.write(`MSVC 环境初始化失败：${result.error?.message ?? result.stderr ?? "未知错误"}\n`);
+    process.exit(result.status ?? 1);
+  }
   for (const line of result.stdout.split(/\r?\n/)) {
     const split = line.indexOf("=");
-    if (split > 0) env[line.slice(0, split)] = line.slice(split + 1);
+    if (split > 0) {
+      const key = line.slice(0, split);
+      env[key.toLowerCase() === "path" ? "PATH" : key] = line.slice(split + 1);
+    }
   }
 }
 
