@@ -171,7 +171,9 @@ dialog::backdrop { background: #14251d65; }
 dialog h2 { font: 600 23px/1.5 "Palatino Linotype", "SimSun", serif; margin: 0 0 18px; }
 dialog p { font-size: 13px; line-height: 1.9; overflow-wrap: anywhere; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px; }
-#maintenance-status { color: var(--danger); }
+/* 维护进度沿用墨绿强调，仅失败状态使用错误色。 */
+#maintenance-status { color: var(--accent); }
+#maintenance-status[data-error="true"] { color: var(--danger); }
 @media (max-width: 1150px) {
   .app-shell { grid-template-columns: 204px minmax(0, 1fr) 176px; }
   .brand { width: 164px; }

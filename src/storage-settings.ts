@@ -16,6 +16,12 @@ export class StorageSettings {
   private info: StorageInfo | null = null;
   private maintenance: "migrate" | "webview" | "cache" | null = null;
   private selectedTarget: string | null = null;
+  // 统计刷新与维护意图分开计代，离开设置或取消后不能提交旧选择。
+  private viewActive = false;
+  private maintenanceEpoch = 0;
+  private choosing = false;
+  private targetClear: Promise<void> = Promise.resolve();
+  private operation: { committed: boolean } | null = null;
 
   constructor(private readonly container: HTMLElement, private readonly getPreferences: () => Preferences,
     private readonly updatePreferences: (patch: Partial<Preferences>) => void,
@@ -39,11 +45,15 @@ export class StorageSettings {
       if (!input.checkValidity()) { input.reportValidity(); return; }
       this.updatePreferences({ cacheMib: Number(input.value) });
     });
-    container.querySelector("#maintenance-dialog")!.addEventListener("cancel", () => { this.selectedTarget = null; void invoke("cancel_storage_target"); });
+    container.querySelector("#maintenance-dialog")!.addEventListener("cancel", (event) => {
+      event.preventDefault();
+      if (!this.operation?.committed) void this.cancelMaintenance().catch((error) => this.message(String(error), true));
+    });
   }
 
   /** 设置页打开立即呈现，后台扫描有自己的取消代次，与文档解析互不占用。 */
   async activate(): Promise<void> {
+    this.viewActive = true; this.updateMaintenanceButtons();
     this.container.querySelector<HTMLInputElement>("#cache-enabled")!.checked = this.getPreferences().persistentCache;
     this.container.querySelector<HTMLInputElement>("#cache-budget")!.value = String(this.getPreferences().cacheMib);
     const epoch = ++this.epoch;
@@ -63,39 +73,90 @@ export class StorageSettings {
     } catch (error) { if (epoch === this.epoch) this.container.querySelector("#storage-status")!.textContent = `无法统计：${String(error)}。可点击重新统计。`; }
   }
 
-  deactivate(): void { this.epoch++; void invoke("cancel_storage_stats").catch(() => {}); }
+  deactivate(): void {
+    this.viewActive = false; this.epoch++; void invoke("cancel_storage_stats").catch(() => {});
+    void this.cancelMaintenance().catch((error) => this.message(`取消迁移目标未完成：${String(error)}`, true));
+  }
+
+  /** 选择器与确认操作各自串行；提交原生维护后不再提供无效的取消入口。 */
+  private updateMaintenanceButtons(): void {
+    for (const action of ["migrate", "webview", "cache"]) this.container.querySelector<HTMLButtonElement>(`[data-storage="${action}"]`)!.disabled = !this.viewActive || this.choosing || !!this.operation;
+    this.container.querySelector('[data-storage="migrate"]')!.textContent = this.choosing ? "正在选择…" : "更改位置…";
+    this.container.querySelector<HTMLButtonElement>('[data-storage="cancel"]')!.disabled = this.operation?.committed ?? false;
+  }
+
+  /** 撤销准备中的维护及暂存授权；清理串行完成后才允许选择新目标。 */
+  private cancelMaintenance(): Promise<void> {
+    this.maintenanceEpoch++;
+    const committed = this.operation?.committed;
+    if (!committed) this.operation = null;
+    this.maintenance = null; this.selectedTarget = null;
+    this.updateMaintenanceButtons(); this.container.querySelector<HTMLDialogElement>("#maintenance-dialog")!.close();
+    if (committed) return Promise.resolve();
+    this.targetClear = this.targetClear.catch(() => {}).then(() => invoke<void>("cancel_storage_target"));
+    return this.targetClear;
+  }
 
   /** 确认界面明确列出影响范围，迁移目标由原生选择器授权后才可提交。 */
   private async action(action: string): Promise<void> {
+    if (!this.viewActive) return;
     const dialog = this.container.querySelector<HTMLDialogElement>("#maintenance-dialog")!;
     const title = this.container.querySelector("#maintenance-title")!;
     const description = this.container.querySelector("#maintenance-description")!;
     const target = this.container.querySelector<HTMLElement>("#maintenance-target")!;
-    const status = this.container.querySelector("#maintenance-status")!;
+    const status = this.container.querySelector<HTMLElement>("#maintenance-status")!;
     const confirm = this.container.querySelector<HTMLButtonElement>("#maintenance-confirm")!;
     if (action === "reveal") { await invoke("reveal_data_directory"); return; }
     if (action === "refresh") { await this.activate(); return; }
-    if (action === "retry") { await invoke("retry_storage_cleanup"); await this.activate(); return; }
-    if (action === "cancel") { dialog.close(); this.selectedTarget = null; await invoke("cancel_storage_target"); return; }
+    if (action === "retry") { const epoch = this.maintenanceEpoch; await invoke("retry_storage_cleanup"); if (this.viewActive && epoch === this.maintenanceEpoch) await this.activate(); return; }
+    if (action === "cancel") { if (!this.operation?.committed) await this.cancelMaintenance(); return; }
     if (["migrate", "webview", "cache"].includes(action)) {
-      if (!this.info && action !== "migrate") { await this.activate(); if (!this.info) throw new Error("请先完成空间统计，再确认清理范围。"); }
+      if (this.choosing || this.operation || dialog.open) return;
+      const epoch = ++this.maintenanceEpoch;
+      if (!this.info && action !== "migrate") {
+        await this.activate(); if (!this.viewActive || epoch !== this.maintenanceEpoch) return;
+        if (!this.info) throw new Error("请先完成空间统计，再确认清理范围。");
+      }
       let path: string | null = null;
-      if (action === "migrate") { path = await invoke<string | null>("choose_storage_target"); if (!path) return; }
+      if (action === "migrate") {
+        this.choosing = true; this.updateMaintenanceButtons();
+        try {
+          await this.targetClear.catch(() => {}); if (!this.viewActive || epoch !== this.maintenanceEpoch) return;
+          path = await invoke<string | null>("choose_storage_target");
+          if (!this.viewActive || epoch !== this.maintenanceEpoch) { if (path) await this.cancelMaintenance(); return; }
+          if (!path) return;
+        } finally { this.choosing = false; this.updateMaintenanceButtons(); }
+      }
       this.selectedTarget = path;
       this.maintenance = action as typeof this.maintenance;
-      target.hidden = !path; target.textContent = path; status.textContent = ""; confirm.disabled = false;
+      target.hidden = !path; target.textContent = path; status.textContent = ""; status.dataset.error = "false"; confirm.disabled = false;
       title.textContent = action === "migrate" ? "迁移应用数据" : action === "webview" ? "清理浏览器数据" : "清理应用缓存";
       description.textContent = action === "migrate" ? "保存阅读进度后，应用会关闭并重新启动。偏好和记录将迁移到以下位置，缓存重新生成，原始文章与附件保持原位。请避开同步盘和可拔出存储。" : action === "webview" ? `应用会关闭并重新启动，再清理约 ${bytes(this.info?.usage.webviewBytes ?? 0)} 的浏览器数据。阅读记录、偏好和原始文章保留。` : `将清理约 ${bytes(this.info?.usage.cacheBytes ?? 0)} 的应用解析缓存，下次打开时可重新生成。阅读记录、偏好和原始文章保留。`;
       confirm.textContent = action === "migrate" ? "迁移并重新启动" : action === "webview" ? "清理并重新启动" : "清理缓存";
+      this.container.querySelector<HTMLElement>(`[data-storage="${action}"]`)!.focus({ preventScroll: true });
       dialog.showModal(); return;
     }
-    if (action === "confirm" && this.maintenance) {
-      confirm.disabled = true; status.textContent = this.maintenance === "cache" ? "正在清理…" : "正在保存并准备重新启动…";
+    if (action === "confirm" && this.maintenance && dialog.open && !this.operation) {
+      const kind = this.maintenance; const selectedTarget = this.selectedTarget; const epoch = this.maintenanceEpoch;
+      const operation = { committed: false }; this.operation = operation;
+      confirm.disabled = true; status.textContent = "正在保存阅读设置，可取消…"; status.dataset.error = "false"; this.updateMaintenanceButtons();
+      let succeeded = false;
       try {
         await this.beforeMaintenance();
-        await invoke(this.maintenance === "migrate" ? "migrate_storage" : this.maintenance === "webview" ? "reset_webview" : "clear_cache", this.maintenance === "migrate" ? { target: this.selectedTarget } : {});
-        if (this.maintenance === "cache") { dialog.close(); this.message("应用缓存已清理，阅读状态已保留。"); await this.activate(); }
-      } catch (error) { confirm.disabled = false; status.textContent = `操作未完成：${String(error)}`; }
+        if (!this.viewActive || epoch !== this.maintenanceEpoch || this.operation !== operation) return;
+        operation.committed = true; this.updateMaintenanceButtons(); status.textContent = kind === "cache" ? "正在清理…" : "正在准备重新启动…";
+        await invoke(kind === "migrate" ? "migrate_storage" : kind === "webview" ? "reset_webview" : "clear_cache", kind === "migrate" ? { target: selectedTarget } : {});
+        succeeded = true;
+        if (!this.viewActive || epoch !== this.maintenanceEpoch || this.operation !== operation) return;
+        if (kind === "cache") {
+          this.maintenance = null; this.selectedTarget = null; this.operation = null; this.updateMaintenanceButtons(); dialog.close();
+          this.message("应用缓存已清理，阅读状态已保留。"); await this.activate();
+        }
+      } catch (error) {
+        if (this.viewActive && epoch === this.maintenanceEpoch && this.operation === operation) { confirm.disabled = false; status.textContent = `操作未完成：${String(error)}`; status.dataset.error = "true"; }
+      } finally {
+        if (this.operation === operation && (!succeeded || kind === "cache")) { this.operation = null; this.updateMaintenanceButtons(); }
+      }
     }
   }
 }
