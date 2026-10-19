@@ -5,6 +5,9 @@ import assert from "node:assert/strict";
 import { test } from "vitest";
 
 const script = fileURLToPath(new URL("./install-audit.ps1", import.meta.url));
+const PROCESS_TIMEOUT_MS = 15_000;
+// 测试总预算覆盖子进程上限，并为 PowerShell 冷启动和夹具调度留出余量。
+const TEST_TIMEOUT_MS = PROCESS_TIMEOUT_MS + 5_000;
 // 从实际脚本加载包装函数；用 cmd 的纯退出码替代 reg.exe，不读写注册表或运行安装器。
 function run(command) {
   return spawnSync(path.join(process.env.SystemRoot, "System32/WindowsPowerShell/v1.0/powershell.exe"), ["-NoProfile", "-NonInteractive", "-Command", `
@@ -19,7 +22,7 @@ function run(command) {
     . ([scriptblock]::Create($function.Extent.Text))
     Set-Alias -Name reg.exe -Value $env:ComSpec
     ${command}
-  `], { env: { ...process.env, MD_AUDIT_SCRIPT: script }, windowsHide: true, encoding: "utf8", timeout: 15_000 });
+  `], { env: { ...process.env, MD_AUDIT_SCRIPT: script }, windowsHide: true, encoding: "utf8", timeout: PROCESS_TIMEOUT_MS });
 }
 
 test.skipIf(process.platform !== "win32")("预期的注册表非零结果不污染 GitHub PowerShell 的步骤退出码", () => {
@@ -32,7 +35,7 @@ test.skipIf(process.platform !== "win32")("预期的注册表非零结果不污�
     if (Test-Path -LiteralPath variable:\\LASTEXITCODE) { exit $LASTEXITCODE }
   `);
   assert.equal(result.status, 0, result.stderr);
-});
+}, TEST_TIMEOUT_MS);
 
 test.skipIf(process.platform !== "win32")("成功的注册表命令也不会清除调用方已有的原生命令失败", () => {
   const result = run(`
@@ -41,7 +44,7 @@ test.skipIf(process.platform !== "win32")("成功的注册表命令也不会清�
     if ($code -ne 0 -or $LASTEXITCODE -ne 37) { throw '调用方的退出码被覆盖' }
   `);
   assert.equal(result.status, 0, result.stderr);
-});
+}, TEST_TIMEOUT_MS);
 
 test.skipIf(process.platform !== "win32")("真实操作失败仍通过返回值触发断言，不被作用域隔离掩盖", () => {
   const result = run(`
@@ -50,7 +53,7 @@ test.skipIf(process.platform !== "win32")("真实操作失败仍通过返回值�
   `);
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /fixture-operation-failed/);
-});
+}, TEST_TIMEOUT_MS);
 
 test.skipIf(process.platform !== "win32")("没有调用方退出码时，不为步骤尾部凭空创建一个失败状态", () => {
   const result = run(`
@@ -60,4 +63,4 @@ test.skipIf(process.platform !== "win32")("没有调用方退出码时，不为�
     if (Get-Variable -Name LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue) { throw '退出码变量泄漏' }
   `);
   assert.equal(result.status, 0, result.stderr);
-});
+}, TEST_TIMEOUT_MS);
