@@ -1,0 +1,12 @@
+/* 暖纸与墨绿为阅读界面基础色，深色模式保持同一排版和控件语义。 */
+:root { color-scheme: light; --paper: #faf8f2; --ink: #283c35; --muted: #5e6c63; --accent: #28634c; font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif; color: var(--ink); background: var(--paper); }
+:root[data-theme="dark"] { color-scheme: dark; --paper: #1c2521; --ink: #e1e5d9; --muted: #adb9ae; --accent: #98c8a9; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+::selection { color: var(--paper); background: var(--accent); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.welcome { max-width: 780px; margin: 16vh auto; padding: 32px; }
+.wordmark { font: italic 600 64px Georgia, "Songti SC", serif; letter-spacing: -0.03em; }
+.wordmark span { color: var(--accent); }
+h1 { font: 500 clamp(28px, 4vw, 42px)/1.6 "Palatino Linotype", "STSong", "SimSun", serif; margin: 40px 0 12px; }
+p { color: var(--muted); line-height: 1.8; overflow-wrap: anywhere; }

@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "仅主窗口可订阅桌面事件；文件系统及外部程序通过受限 Rust 命令访问。",
+  "windows": ["main"],
+  "permissions": ["core:event:default", "core:window:allow-set-title"]
+}

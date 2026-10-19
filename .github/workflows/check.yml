@@ -1,0 +1,37 @@
+name: Windows quality
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  desktop:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install locked frontend dependencies
+        run: npm ci
+      - name: Rust formatting
+        run: npm run desktop -- fmt -- --check
+      - name: Frontend typecheck and production build
+        run: npm run build
+      - name: Storage and document core tests
+        run: npm run test:core -- --locked
+      - name: Desktop compilation
+        run: npm run check:desktop -- --locked
+      - name: Release desktop build
+        run: npm run build:desktop -- --no-bundle

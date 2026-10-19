@@ -10,3 +10,5 @@ target/
 *.pem
 *.log
 *.tsbuildinfo
+src-tauri/gen/
+output/
