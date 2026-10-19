@@ -12,6 +12,7 @@ export class Reader {
   private epoch = 0;
   private current: Omit<ReaderDocument, "blocks"> | null = null;
   private worker: Worker | null = null;
+  private enhancementUnavailable = false;
   private observer: IntersectionObserver | null = null;
   private activeHeading = "";
   private jobs = new Map<number, HTMLElement>();
@@ -40,8 +41,8 @@ export class Reader {
         void navigator.clipboard.writeText(copy.parentElement!.querySelector("code")!.textContent ?? "")
           .then(() => { this.onMessage("代码已复制"); }, () => { this.onMessage("复制失败，请选中文字后按 Ctrl+C。"); });
       }
-      const remote = target.closest<HTMLButtonElement>(".load-remote");
-      if (remote) void this.loadImage(remote.parentElement!, true);
+      const imageAction = target.closest<HTMLButtonElement>(".load-remote,.image-retry");
+      if (imageAction) void this.loadImage(imageAction.closest<HTMLElement>(".image-slot")!, true);
     });
   }
 
@@ -64,7 +65,7 @@ export class Reader {
           element.dataset.visible = String(entry.isIntersecting);
           if (entry.isIntersecting) {
             const image = this.current?.images[Number(element.dataset.image)];
-            if (image && !image.remote) void this.loadImage(element, false);
+            if (image && !image.remote && element.dataset.failed !== "true") void this.loadImage(element, false);
           } else if (this.blobs.has(element)) {
             element.style.minHeight = `${element.getBoundingClientRect().height}px`;
             URL.revokeObjectURL(this.blobs.get(element)!);
@@ -137,25 +138,52 @@ export class Reader {
 
   /** 高亮和 KaTeX 仅在 Worker 处理；更换文章时直接终止，不留下过期队列。 */
   private enhance(element: HTMLElement): void {
-    if (!this.worker) {
-      this.worker = new Worker(new URL("./enhance.worker.ts", import.meta.url), { type: "module" });
-      this.worker.onmessage = (event: MessageEvent<{ id: number; html: string | null }>) => {
-        const target = this.jobs.get(event.data.id);
-        this.jobs.delete(event.data.id);
-        if (!target?.isConnected || !event.data.html) return;
-        target.innerHTML = event.data.html;
-        target.dataset.enhanced = "true";
-        if (this.query) {
-          window.clearTimeout(this.searchTimer);
-          this.searchTimer = window.setTimeout(() => this.search(this.query), 40);
-        }
-      };
-      this.worker.onerror = () => { this.onMessage("增强处理暂不可用，正文和代码仍可正常阅读。"); };
-    }
-    const id = ++this.jobId;
-    this.jobs.set(id, element);
-    this.worker.postMessage({ id, kind: element.classList.contains("math") ? "math" : "code", text: element.textContent ?? "",
-      language: element.className.match(/language-([\w+-]+)/)?.[1], display: element.dataset.display === "true" });
+    if (this.enhancementUnavailable) return;
+    try {
+      if (!this.worker) {
+        const epoch = this.epoch;
+        const worker = new Worker(new URL("./enhance.worker.ts", import.meta.url), { type: "module" }); this.worker = worker;
+        worker.onmessage = (event: MessageEvent<{ id: number; html: string | null }>) => {
+          if (epoch !== this.epoch || this.worker !== worker) return;
+          const target = this.jobs.get(event.data.id);
+          this.jobs.delete(event.data.id);
+          if (!target?.isConnected || !event.data.html) return;
+          target.innerHTML = event.data.html;
+          target.dataset.enhanced = "true";
+          if (this.query) {
+            window.clearTimeout(this.searchTimer);
+            this.searchTimer = window.setTimeout(() => this.search(this.query), 40);
+          }
+        };
+        worker.onerror = () => { if (epoch === this.epoch && this.worker === worker) this.failEnhancement(); };
+      }
+      const id = ++this.jobId;
+      this.jobs.set(id, element);
+      this.worker.postMessage({ id, kind: element.classList.contains("math") ? "math" : "code", text: element.textContent ?? "",
+        language: element.className.match(/language-([\w+-]+)/)?.[1], display: element.dataset.display === "true" });
+    } catch { this.failEnhancement(); }
+  }
+
+  /** 本篇只降级一次并释放失败队列；重新打开文章后再尝试增强。 */
+  private failEnhancement(): void {
+    if (this.enhancementUnavailable) return;
+    this.enhancementUnavailable = true;
+    if (this.worker) { this.worker.onmessage = null; this.worker.onerror = null; this.worker.terminate(); this.worker = null; }
+    this.jobs.clear();
+    this.onMessage("增强处理暂不可用，正文、代码和公式原文仍可阅读。重新打开文章后会重试。");
+  }
+
+  /** 失败资源立即释放，错误以文本呈现；重试仍走原有图片授权边界。 */
+  private imageFailure(slot: HTMLElement, reason: string, restoreFocus = false): void {
+    const focused = slot.contains(document.activeElement) || (restoreFocus && document.activeElement === document.body);
+    const source = this.blobs.get(slot);
+    if (source) { URL.revokeObjectURL(source); this.blobs.delete(slot); }
+    slot.dataset.failed = "true";
+    const status = document.createElement("span"); status.role = "status"; status.textContent = `${slot.dataset.alt} · ${reason}`;
+    const button = document.createElement("button"); button.type = "button"; button.className = "secondary image-retry";
+    button.textContent = "重新加载图片"; button.setAttribute("aria-label", `重新加载图片：${slot.dataset.alt}`);
+    slot.replaceChildren(status, button);
+    if (focused) button.focus({ preventScroll: true });
   }
 
   /** 本地资源从受限 IPC 读取二进制；远程资源只在用户点击且为 HTTPS 时加载。 */
@@ -165,6 +193,10 @@ export class Reader {
     const index = Number(slot.dataset.image);
     const image = this.current.images[index];
     slot.dataset.loading = "true";
+    delete slot.dataset.failed;
+    const button = slot.querySelector<HTMLButtonElement>("button");
+    const restoreFocus = button === document.activeElement;
+    if (button) { button.disabled = true; button.textContent = "正在加载图片…"; }
     try {
       let source: string;
       if (image.remote) {
@@ -179,10 +211,13 @@ export class Reader {
       if (epoch !== this.epoch) return;
       const element = document.createElement("img");
       element.alt = slot.dataset.alt ?? ""; element.decoding = "async"; element.referrerPolicy = "no-referrer";
-      element.onerror = () => { slot.textContent = `${element.alt} · 图片加载失败`; };
+      element.onerror = () => { if (epoch === this.epoch && slot.isConnected && slot.contains(element)) this.imageFailure(slot, "图片加载失败"); };
       element.src = source;
+      // 禁用重试按钮后浏览器会暂时把焦点放到 body；用户已转到其他控件时不抢回焦点。
+      const focused = restoreFocus && (document.activeElement === button || document.activeElement === document.body);
       slot.replaceChildren(element);
-    } catch (error) { if (epoch === this.epoch) slot.textContent = `${slot.dataset.alt} · ${String(error)}`; }
+      if (focused) { element.tabIndex = -1; element.focus({ preventScroll: true }); }
+    } catch (error) { if (epoch === this.epoch && slot.isConnected) this.imageFailure(slot, String(error), restoreFocus); }
     finally { slot.dataset.loading = "false"; }
   }
 
@@ -283,7 +318,8 @@ export class Reader {
   /** 释放一篇文章持有的线程、观察器、范围及图片，不保留无限文档缓存。 */
   dispose(): void {
     this.epoch++;
-    this.worker?.terminate(); this.worker = null;
+    if (this.worker) { this.worker.onmessage = null; this.worker.onerror = null; this.worker.terminate(); this.worker = null; }
+    this.enhancementUnavailable = false;
     this.observer?.disconnect(); this.observer = null;
     this.activeHeading = "";
     this.jobs.clear();
