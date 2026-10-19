@@ -1,16 +1,33 @@
 # 当前工作进度
 
-更新日期：2026-10-19。阶段 6 的可自动化缺口已补上脚本、测试和本机步骤；原生维护、正式性能和系统盘审计仍未在 Windows 上取得通过证据。范围与门槛仍以 `SPEC.md` 为准。
+更新日期：2026-10-19。本机已按 `docs/PHASE6-WINDOWS.md` 跑过正式性能、启动、安装审计和 `--recovery-only`。完整原生维护还没有在本机跑完，首次启动和 Process Monitor 未测。`specPassed` 仍为 false，不把未测项写成通过。范围与门槛仍以 `SPEC.md` 为准。
+
+## 本机 Windows 取证（Notesa-md）
+
+硬件：Windows 11 专业版 10.0.26300，AMD Ryzen 7 9700X（8 核 / 8 逻辑处理器），内存 33451143168 字节，WebView2 155.0.4283.62。性能窗口 1280×860，屏幕 2560×1440，缩放 100%（devicePixelRatio 1），刷新率 239Hz。样本均为热文件缓存，没有清系统缓存，也没有做系统重启后的冷启动。release 程序在探针与 NSIS 钩子改动之后重新构建，原生报告中的 SHA256 为 `5520d4984c4cb761107f20c9afc3a098cd561881542b065b6a159777fa6cd59b`。
+
+命令与结果：
+
+- `MD_PERF_SAMPLES=30`、`MD_SWITCHES=100`，`node tests/performance.mjs .tools/target/release/md-reader.exe`。`.reports/performance.json` 的 `result` 为 `measured`，`formal` 为 true，`specPassed` 为 false。
+- 关闭持久缓存时，首屏中位/P95/最大：100KB 19.5/28.3/33.5ms，1MB 90.2/117.4/125.6ms，10MB 323.2/386.7/439.9ms。10MB 全文 P95 1031.8ms、最大 1033.6ms，按规格单独记录，不并进首屏门槛。
+- 打开持久缓存后（第一次写入不计入）：1MB 首屏 P95 86.6ms，10MB 首屏 P95 379.5ms，10MB 全文 P95 997.1ms、最大 2389.2ms。
+- 1MB 搜索 30 次，中位/P95/最大 66.9/70.5/71.9ms。滚动 1200 帧，帧间隔中位 4.2ms、最大 8.3ms，超过 25ms 的帧为 0，超过 50ms 的长任务为 0。
+- 100 次在 100KB 与 1MB 之间切换，首屏中位/P95/最大 53.7/68.5/70.7ms。应用 `cache/` 前后都是 12534230 字节。1MB 静置后进程组私有工作集 327675904 字节（312.5MiB），100 次切换后 320782336 字节（305.9MiB），进程组成员没有增加。312.5MiB 高于 SPEC 的 250MiB，这一项未达标。WebDriver 换过用户数据目录，缓存字节不能代表产品 WebView 目录。
+- `MD_PERF_SAMPLES=30`，`node tests/startup.mjs .tools/target/release/md-reader.exe`。`.reports/startup.json` 的 `result` 为 `measured`，`specPassed` 为 false。第一次初始化 499ms 不进入统计；其后 30 次热缓存中位/P95/最大 443/511/546ms。数字低于 1.5 秒，但不能外推冷缓存或系统重启。
+- `tests/install-audit.ps1` 对 `.tools/target/release/bundle/nsis/MD_0.1.0_x64-setup.exe`、工作根 `H:\work\md\.runtime\install-audit` 退出码 0。`.reports/install-audit.json` 的 `result` 为 `observed`，`specPassed` 为 false，`restoredRegistry` 为 true。四条路径是：安装后三个扩展名指向本次程序且安装阶段没有 MdReader 数据；`/S` 保留数据根、引导和原文并去掉关联；`/S /DELETEAPPDATA` 删除应用数据、原文仍在；`/UPDATE /DELETEAPPDATA` 仍保留数据。脚本没有打开主窗口。真实 `%LOCALAPPDATA%\MdReader` 在跑前跑后都不存在。首次选目录、取消退出和 Process Monitor 系统盘审计未测。
+- `node tests/native-maintenance.mjs .tools/target/release/md-reader.exe --recovery-only` 的 `.reports/native-maintenance.json` 中 `result` 为 `passed`，`mode` 为 `recovery-only`，7 项检查通过：复制中断重建、超预算回滚、目标不一致回滚、未确认回滚、正文恢复失败后回滚、旧会话占用中止、外来文件残留跨重启重试。这不能代替完整模式。设置入口的 WebView 重建和真实目录迁移还没跑完。
+
+本机另外通过：前端 34 项，Rust 核心 36 项（缓存 4、解析 6、迁移 12、存储 11、卸载 3；存储比 Linux 多 1 项 Windows junction），`fmt --check`。第一次性能采样在进程组脚本处失败，原因是 Windows PowerShell 5 不能解析无 BOM 的 UTF-8 中文；修正后整段重跑，上面的 `performance.json` 是重跑结果。安装审计补了两处才能在本机跑完：注册表项不存在时不中断，以及等待 NSIS 卸载副本再检查程序是否删除。
 
 ## 本次阶段 6 脚本与契约
 
 假设（可推翻）：启动探针原先写在健康提交之前，提交失败并重启时，启动脚本仍可能把该进程读成“已就绪”。现改为 `commit_ready` 成功后才写 `temp/startup-probe.json`，清理旧目录仍在探针之后。Linux 上新增测试覆盖损坏目标不发布探针，以及探针出现时源目录仍在。
 
-假设（可推翻）：NSIS 静默卸载不经过确认页，只读复选框就无法脚本化“删除数据”。钩子现在同时接受确认页勾选和 `/DELETEAPPDATA`，`/UPDATE` 仍然保留数据。`tests/install-audit.ps1` 会安装、检查三个扩展名关联，并跑保留、删除、升级三条卸载；它不打开主窗口。本环境没有 Windows 安装器，不能把这条路径写成已观察。
+假设（可推翻）：NSIS 静默卸载不经过确认页，只读复选框就无法脚本化“删除数据”。钩子现在同时接受确认页勾选和 `/DELETEAPPDATA`，`/UPDATE` 仍然保留数据。本机安装审计已经观察到这几条路径，证据见上面一节；那次运行没有打开主窗口。
 
 性能脚本改为用点击前的时间戳丢弃上一次测量，默认 30 次样本和 100 次切换，并调用进程组私有工作集脚本。报告里的 `comparison` 只对照数字，`specPassed` 固定为 false。磁盘快照脚本同样不代替 Process Monitor。精确命令和期望证据见 `docs/PHASE6-WINDOWS.md`。
 
-本环境已通过：前端 34 项（含阶段 6 契约、样本字节数和磁盘分类）、Rust 核心 35 项（缓存 4、解析 6、迁移 12、存储 10、卸载 3）、TypeScript 检查和生产构建。Windows junction 用例未在本环境执行。没有运行 WebView2、原生选择器、NSIS 安装卸载或正式性能采样。
+写这段时的 Linux 环境通过了前端 34 项和 Rust 核心 35 项（存储 10，不含 Windows junction），没有运行 WebView2 或安装器。本机后续结果见上面的「本机 Windows 取证」，不要把两段混成同一次运行。
 
 ## 此前迁移安全修复与预发布边界
 
