@@ -10,9 +10,28 @@ $ErrorActionPreference = 'Stop'
 function Assert-SafeRoot([string]$Path) {
   if ($Path -match '\s') { throw "路径不能包含空格，否则 NSIS /D= 不能可靠传递：$Path" }
   $full = [System.IO.Path]::GetFullPath($Path)
-  if (-not $full.EndsWith('\install-audit')) { throw "WorkRoot 必须以 install-audit 结尾，避免清理其他目录：$full" }
+  if (-not $full.EndsWith('\install-audit', [System.StringComparison]::OrdinalIgnoreCase)) { throw "WorkRoot 必须以 install-audit 结尾，避免清理其他目录：$full" }
   $drive = [System.IO.Path]::GetPathRoot($full)
   if ($full.TrimEnd('\') -eq $drive.TrimEnd('\')) { throw "不能把盘符根当作工作目录。" }
+  # 名称不代表归属；已有内容必须保留，失败报告要由操作者检查后再选择新的空目录。
+  if (Test-Path -LiteralPath $full) {
+    if (-not (Test-Path -LiteralPath $full -PathType Container)) { throw "WorkRoot 不是目录：$full" }
+    if (@(Get-ChildItem -LiteralPath $full -Force | Select-Object -First 1).Count -gt 0) {
+      throw "WorkRoot 已有内容，拒绝自动清理：$full"
+    }
+  }
+  # 逐层拒绝 junction / 符号链接，避免随后安装和清理经过别名进入其他目录。
+  $cursor = $full
+  while ($cursor) {
+    if (Test-Path -LiteralPath $cursor) {
+      $item = Get-Item -LiteralPath $cursor -Force
+      if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { throw "WorkRoot 经过重解析点：$cursor" }
+      if (-not $item.PSIsContainer) { throw "WorkRoot 的父路径不是目录：$cursor" }
+    }
+    $parent = [System.IO.Path]::GetDirectoryName($cursor)
+    if ($parent -eq $cursor) { break }
+    $cursor = $parent
+  }
   return $full
 }
 
@@ -56,11 +75,21 @@ function Get-DefaultValue([string]$Path) {
 function Invoke-Reg {
   param([Parameter(ValueFromRemainingArguments = $true)][string[]]$ArgumentList)
   $previous = $ErrorActionPreference
-  $ErrorActionPreference = 'Continue'
-  & reg.exe @ArgumentList *> $null
-  $code = $LASTEXITCODE
-  $ErrorActionPreference = $previous
-  return $code
+  # Windows PowerShell 的原生命令更新全局退出码；保留调用方状态，操作结果仍交给断言检查。
+  $hadExitCode = $null -ne (Get-Variable -Name LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue)
+  $previousExitCode = $global:LASTEXITCODE
+  try {
+    $command = Get-Command reg.exe -ErrorAction Stop
+    $ErrorActionPreference = 'Continue'
+    & $command @ArgumentList *> $null
+    $code = $LASTEXITCODE
+    Write-Host ("注册表 {0}：退出码 {1}" -f $ArgumentList[0], $code)
+    return $code
+  } finally {
+    $ErrorActionPreference = $previous
+    if ($hadExitCode) { $global:LASTEXITCODE = $previousExitCode }
+    else { Remove-Variable -Name LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue }
+  }
 }
 
 function Assert-Associated([string]$Executable) {
@@ -110,6 +139,7 @@ $report = [ordered]@{
   specPassedReason = '没有启动主窗口，不能证明首次选择、取消退出或系统盘全程写入。'
   installer = $Installer
   workRoot = $WorkRoot
+  stage = '准备备份'
   paths = @()
 }
 function Get-TreeFingerprint([string]$Directory) {
@@ -139,6 +169,7 @@ $shortcuts = @(
 )
 
 try {
+  Write-Host ("安装审计：{0}" -f $report.stage)
   foreach ($key in $keys) {
     $file = Join-Path $backup (($key -replace '[\\: ]', '_') + '.reg')
     if ((Invoke-Reg query $key) -eq 0) {
@@ -153,7 +184,6 @@ try {
       $shortcutBackup += [pscustomobject]@{ Path = $shortcut; Backup = $dest }
     }
   }
-  if (Test-Path -LiteralPath $WorkRoot) { Remove-Item -LiteralPath $WorkRoot -Recurse -Force }
   New-Item -ItemType Directory -Force -Path $installDir | Out-Null
   # 只隔离这个安装进程看到的配置和临时目录，不改用户级环境变量。
   $env:LOCALAPPDATA = Join-Path $WorkRoot 'local'
@@ -162,6 +192,8 @@ try {
   $env:TMP = $env:TEMP
   foreach ($directory in @($env:LOCALAPPDATA, $env:APPDATA, $env:TEMP)) { New-Item -ItemType Directory -Force -Path $directory | Out-Null }
 
+  $report.stage = '安装与关联'
+  Write-Host ("安装审计：{0}" -f $report.stage)
   Invoke-Quiet $Installer "/S /NS /D=$installDir"
   if (-not (Test-Path -LiteralPath $exe)) { throw "安装后没有主程序：$exe" }
   $profileWrites = @(Get-ChildItem -LiteralPath $env:LOCALAPPDATA -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.FullName -match '\\MdReader\\|\\io\.notesae\.mdreader\\' })
@@ -176,6 +208,8 @@ try {
   }
   $report.paths += '安装完成，三个扩展名关联到当前用户安装目录，安装阶段没有创建 MdReader 数据'
 
+  $report.stage = '保留数据卸载'
+  Write-Host ("安装审计：{0}" -f $report.stage)
   $boot = Initialize-AuditData $env:LOCALAPPDATA $dataRoot $original
   Wait-Uninstall (Join-Path $installDir 'uninstall.exe') '/S' $exe
   if (Test-Path -LiteralPath $exe) { throw '保留数据的卸载后程序仍在' }
@@ -186,6 +220,8 @@ try {
   if ($command -and $command -like "*$exe*") { throw '保留卸载后关联仍指向已删除程序' }
   $report.paths += '静默卸载保留隔离数据根、引导记录和原始文章，并移除文件关联'
 
+  $report.stage = '清理应用数据卸载'
+  Write-Host ("安装审计：{0}" -f $report.stage)
   Invoke-Quiet $Installer "/S /NS /D=$installDir"
   Assert-Associated $exe
   Wait-Uninstall (Join-Path $installDir 'uninstall.exe') '/S /DELETEAPPDATA' $exe
@@ -194,6 +230,8 @@ try {
   if (-not (Test-Path -LiteralPath $original)) { throw '清理数据时删除了原始文章' }
   $report.paths += '静默 /DELETEAPPDATA 删除隔离应用数据，原始文章仍在'
 
+  $report.stage = '升级保留数据卸载'
+  Write-Host ("安装审计：{0}" -f $report.stage)
   Invoke-Quiet $Installer "/S /NS /D=$installDir"
   Initialize-AuditData $env:LOCALAPPDATA $dataRoot $original | Out-Null
   Wait-Uninstall (Join-Path $installDir 'uninstall.exe') '/S /UPDATE /DELETEAPPDATA' $exe
@@ -201,6 +239,7 @@ try {
   if (-not (Test-Path -LiteralPath (Join-Path $env:LOCALAPPDATA 'MdReader\bootstrap.json'))) { throw '升级卸载删除了引导记录' }
   if (-not (Test-Path -LiteralPath $original)) { throw '升级卸载删除了原始文章' }
   $report.paths += '带 /UPDATE 时即使传入 /DELETEAPPDATA 也保留应用数据'
+  $report.stage = '检查真实配置目录未改动'
   if ((Get-TreeFingerprint $realMd) -ne $beforeRealMd -or (Get-TreeFingerprint $realBundle) -ne $beforeRealBundle) {
     throw '测试过程改动了用户真实的 LocalAppData 应用目录。隔离环境变量没有覆盖全部写入。'
   }
@@ -208,6 +247,13 @@ try {
 } catch {
   $report.result = 'failed'
   $report.error = "$_"
+  $report.failure = [ordered]@{
+    stage = $report.stage
+    errorId = $_.FullyQualifiedErrorId
+    position = $_.InvocationInfo.PositionMessage
+    stack = $_.ScriptStackTrace
+  }
+  Write-Host ("安装审计失败（{0}）：{1}" -f $report.stage, $report.error)
   throw
 } finally {
   $restoreErrors = @()
@@ -232,8 +278,12 @@ try {
   $reportDirectory = Join-Path $repo '.reports'
   New-Item -ItemType Directory -Force -Path $reportDirectory | Out-Null
   $report.restoredRegistry = $restoreErrors.Count -eq 0
+  $report.restoreErrors = $restoreErrors
+  if ($restoreErrors.Count -gt 0) { $report.registryBackup = $backup }
   ($report | ConvertTo-Json -Depth 5) | Set-Content -LiteralPath (Join-Path $reportDirectory 'install-audit.json') -Encoding UTF8
-  if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Recurse -Force }
+  # CI 日志必须保留具体阶段和断言；不能只有 PowerShell 最后的退出码。
+  Write-Host ($report | ConvertTo-Json -Depth 5)
+  if ($restoreErrors.Count -eq 0 -and (Test-Path -LiteralPath $backup)) { Remove-Item -LiteralPath $backup -Recurse -Force }
   if ($report.result -eq 'observed' -and (Test-Path -LiteralPath $WorkRoot)) { Remove-Item -LiteralPath $WorkRoot -Recurse -Force }
   if ($restoreErrors.Count -gt 0) { throw ($restoreErrors -join '; ') }
 }

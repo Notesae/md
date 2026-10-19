@@ -25,7 +25,17 @@ beforeEach(async () => {
 
 afterEach(() => { reader.dispose(); vi.unstubAllGlobals(); });
 
-describe("正文隐藏时取消阅读位置恢复", () => {
+describe("阅读位置恢复与文档释放", () => {
+  it("渲染完成后不保留整篇 HTML 字符串，关闭时释放导航元数据", () => {
+    // 直接检查持有的对象，避免用手动 GC 或浏览器工作集波动充当释放证据。
+    const retained = Reflect.get(reader, "current");
+    expect(retained).not.toHaveProperty("blocks");
+    expect(retained.revision).toBe(1);
+    expect(article.textContent).toBe("正文");
+    reader.dispose();
+    expect(Reflect.get(reader, "current")).toBeNull();
+  });
+
   it("锚点段落后移时使用源块摘要恢复，并保留段内像素偏移", async () => {
     const value: ReaderDocument = { path: "阅读.md", title: "阅读", bytes: 30, revision: 2, readMs: 0, parseMs: 0, cacheMs: 0, cacheHit: false, cacheError: null,
       blocks: ["<p>新增段落</p>", "<p>原段落</p>"], blockHashes: ["new", "saved"], headings: [], images: [], links: [] };

@@ -66,7 +66,7 @@ function splitCsv(line) {
   return cells;
 }
 
-/** 读取 Process Monitor 一类的 CSV。只保留 md-reader 的创建和写入，不把读操作算成落盘。 */
+/** 同时检查应用和 WebView2，避免漏掉由浏览器子进程写到默认系统盘的数据。 */
 export function writesFromTable(text) {
   const lines = text.trim().split(/\r?\n/).filter(Boolean);
   if (!lines.length) return [];
@@ -74,15 +74,17 @@ export function writesFromTable(text) {
   const processIndex = header.indexOf("process name");
   const operationIndex = header.indexOf("operation");
   const pathIndex = header.indexOf("path");
-  if (processIndex < 0 || pathIndex < 0) throw new Error("表头缺少 Process Name 或 Path");
+  const resultIndex = header.indexOf("result");
+  if (processIndex < 0 || operationIndex < 0 || pathIndex < 0) throw new Error("表头缺少 Process Name、Operation 或 Path");
   const writes = [];
   for (const line of lines.slice(1)) {
     const cells = splitCsv(line);
     const processName = cells[processIndex] ?? "";
-    const operation = operationIndex >= 0 ? cells[operationIndex] ?? "" : "";
+    const operation = cells[operationIndex] ?? "";
     const filePath = cells[pathIndex] ?? "";
-    if (!/md-reader/i.test(processName) || !filePath) continue;
-    if (operation && !/writefile|createfile|filewrite/i.test(operation)) continue;
+    if (!/^(?:md-reader|msedgewebview2)\.exe$/i.test(processName.trim()) || !filePath) continue;
+    if (!/^(?:writefile|createfile|filewrite)$/i.test(operation.trim())) continue;
+    if (resultIndex >= 0 && cells[resultIndex]?.trim().toUpperCase() !== "SUCCESS") continue;
     writes.push(filePath);
   }
   return writes;
@@ -119,6 +121,7 @@ export function selfCheckAuditRules() {
   ].join("\n"));
   assert.deepEqual(writes, [
     "D:\\data\\MdReader\\state\\preferences.json",
+    "C:\\Users\\me\\AppData\\Local\\Temp\\stray.bin",
     "C:\\Users\\me\\AppData\\Local\\Temp\\unexpected.bin",
   ]);
 }

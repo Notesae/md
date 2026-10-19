@@ -34,7 +34,7 @@ $installer = Get-ChildItem .tools\target\release\bundle\nsis\*-setup.exe | Selec
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\install-audit.ps1 -Installer $installer.FullName -WorkRoot H:\work\md\.runtime\install-audit
 ```
 
-`WorkRoot` 必须以 `install-audit` 结尾，且路径不能含空格。脚本会：
+`WorkRoot` 必须以 `install-audit` 结尾，路径不能含空格，且目录尚不存在或为空；目录本身及其现有父路径不能经过 junction / 符号链接。失败运行留下的目录要先检查，再换用新的空工作根；脚本不会凭目录名称自动清空已有内容。脚本会：
 
 1. 导出并在结束时恢复 `HKCU` 的 `.md`、`.markdown`、`.mdown`、`Markdown 文档`，以及卸载项 `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\MD`。
 2. 用 `/S /NS /D=` 安装到隔离目录，确认三个扩展名的打开命令指向这次安装的 `md-reader.exe`。
@@ -50,7 +50,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\install-audit.ps1 -I
 
 ## 首次启动与系统盘写入
 
-准备 Process Monitor，过滤进程名 `md-reader.exe` 和 `msedgewebview2.exe`，操作包含 `CreateFile` 与 `WriteFile`。使用一台没有现成 `%LOCALAPPDATA%\MdReader` 的账户，或先确认该目录可以移走。不要把用户正在使用的数据目录拿来做这次实验。
+准备 Process Monitor，过滤进程名 `md-reader.exe` 和 `msedgewebview2.exe`，并限定到本次测试应用的进程组 PID，避免其他应用的 WebView 写入混入。操作包含 `CreateFile` 与 `WriteFile`，导出保留 `Process Name`、`Operation`、`Path` 和 `Result` 列。审计脚本同时检查这两个进程名，只纳入成功操作；`CreateFile` 也可能只是打开已有文件，应结合 Detail 判断，不能把它的数量直接当作实际写盘次数。使用一台没有现成 `%LOCALAPPDATA%\MdReader` 的账户，或先确认该目录可以移走。不要把用户正在使用的数据目录拿来做这次实验。
 
 1. 从开始菜单或安装目录启动 `md-reader.exe`，不要设置 `MD_BOOTSTRAP_DIR`。
 2. 在原生目录选择器选择“取消”。进程应退出。`%LOCALAPPDATA%`、`%APPDATA%` 和 `%TEMP%` 中不应留下新的 `MdReader` 数据根或 WebView 用户数据。标准引导目录最多出现空的定位目录；出现正文、历史或 WebView 配置则失败。
@@ -80,7 +80,7 @@ node tests\native-maintenance.mjs .tools\target\release\md-reader.exe
 node tests\native-maintenance.mjs .tools\target\release\md-reader.exe --recovery-only
 ```
 
-`--recovery-only` 仍会打开真实窗口，不能代替完整模式。期望 `.reports\native-maintenance.json` 的 `result` 为 `passed`，并且 `checks` 包含完整模式的两条真实维护记录。历史报告或中途停在目录选择的报告不能算本次通过。
+`--recovery-only` 仍会打开真实窗口，不能代替完整模式。最新完整与恢复报告分别保存在 `.reports\native-maintenance-full.json` 和 `.reports\native-maintenance-recovery-only.json`，每次运行另存 `.reports\native-maintenance\<本次夹具 UUID>.json`；`.reports\native-maintenance.json` 只指向最近一次运行。期望完整模式报告的 `result` 为 `passed`，并且 `checks` 包含两条真实维护记录。不要拿恢复模式或旧运行的报告代替本次完整验收，也不要只保留最新文件而丢失失败记录。
 
 ## 性能、内存、滚动和 100 次切换
 
@@ -100,7 +100,7 @@ node tests\startup.mjs .tools\target\release\md-reader.exe
 - `.reports\performance.json` 的 `result` 为 `measured`，`specPassed` 为 `false`。
 - 100KB、1MB、10MB 在持久缓存开和关时都有样本；缓存开启的第一次写入不计入该组。
 - `comparison` 可以显示是否落在 SPEC 目标内，但验收记录还要写 CPU、系统版本、WebView2 版本、分辨率、缩放，并分开冷缓存和热缓存。
-- 1MB 静置后的进程组私有工作集来自 `tests\process-memory.ps1`。WebDriver 会换掉 WebView 用户数据目录，所以 JSON 里的缓存字节只统计应用 `cache\`。
+- 进程组私有工作集来自 `tests\process-memory.ps1`。当前 `after1Mb` 只在重新打开 1MB 后立即取单次样本，没有自动静置；不能直接当作稳态验收。还需固定并记录自然静置时长、采样间隔、完整时间序列和过程峰值，不能取最低点或手动裁剪工作集。WebDriver 会换掉 WebView 用户数据目录，所以 JSON 里的缓存字节只统计应用 `cache\`。
 - 滚动记录帧间隔和超过 50ms 的长任务。
 - `.reports\startup.json` 把第一次初始化单独列出，其后的样本才进入中位和 P95。目标仍是恢复约 100KB 文档时 P95 ≤ 1.5 秒。
 

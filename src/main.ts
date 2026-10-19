@@ -57,7 +57,7 @@ let request = 0;
 let directoryEpoch = 0;
 let folderBusy = false;
 let session: Session;
-let current: ReaderDocument | null = null;
+let current: Omit<ReaderDocument, "blocks"> | null = null;
 let settingsOpen = false;
 // 设置页隐藏正文时保留原锚点，文件变化延迟到返回阅读后处理。
 let settingsPosition: ReadingPosition | undefined;
@@ -261,7 +261,9 @@ async function openPath(path: string, restore?: ReadingPosition, kind: "open" | 
     // User Timing 供本机性能验收使用；记录有限数值，不保留路径或原文。
     const timing = { bytes: result.bytes, readMs: result.readMs, parseMs: result.parseMs, cacheMs: result.cacheMs, cacheHit: result.cacheHit, ipcMs: performance.now() - ipcStart };
     const saved = restore ?? session.state.recent.find((item) => item.path === result.path) ?? { position: 0, block: null, offset: 0, anchorHash: null };
-    current = result; if (settingsOpen) toggleSettings(false);
+    // 正文字符串只交给本次渲染；主界面不额外持有已经构建 DOM 的整篇 HTML。
+    const { blocks, ...metadata } = result;
+    current = metadata; if (settingsOpen) toggleSettings(false);
     document.querySelector<HTMLElement>("#welcome")!.hidden = true; reader.article.hidden = false;
     document.querySelector<HTMLElement>("#close-document")!.hidden = false;
     document.querySelector("#document-name")!.textContent = filename(result.path);
@@ -270,10 +272,10 @@ async function openPath(path: string, restore?: ReadingPosition, kind: "open" | 
     if (isTauri()) void getCurrentWindow().setTitle(`${filename(result.path)} · MD`);
     renderOutline();
     restoringPosition = saved;
-    await reader.show(result, () => {
+    await reader.show({ ...metadata, blocks }, () => {
       if (ticket !== request) return;
       performance.measure("md:first-paint", { start, end: performance.now(), detail: timing });
-      app.classList.remove("opening"); document.querySelector("#document-status")!.textContent = `${sizeLabel(result.bytes)} · 首屏 ${(performance.now() - start).toFixed(0)} ms`;
+      app.classList.remove("opening"); document.querySelector("#document-status")!.textContent = `${sizeLabel(metadata.bytes)} · 首屏 ${(performance.now() - start).toFixed(0)} ms`;
     });
     if (ticket !== request) return;
     performance.measure("md:full-text", { start, end: performance.now(), detail: timing });

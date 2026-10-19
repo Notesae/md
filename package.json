@@ -12,7 +12,7 @@
     "test:core": "node scripts/desktop.mjs test-core",
     "check:desktop": "node scripts/desktop.mjs check",
     "build:desktop": "node scripts/desktop.mjs build",
-    "test:phase6": "vitest run tests/phase6-contract.test.mjs tests/audit-rules.test.mjs tests/perf-stats.test.mjs"
+    "test:phase6": "vitest run tests/phase6-contract.test.mjs tests/audit-rules.test.mjs tests/perf-stats.test.mjs tests/install-audit-safety.test.mjs tests/install-audit-process.test.mjs tests/maintenance-report.test.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "2.12.4",

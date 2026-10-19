@@ -10,7 +10,7 @@ const frame = () => new Promise<void>((resolve) => requestAnimationFrame(() => r
 /** 管理当前文章的 DOM、可视增强和搜索；切换时终止旧 Worker 并释放所有图片 URL。 */
 export class Reader {
   private epoch = 0;
-  private current: ReaderDocument | null = null;
+  private current: Omit<ReaderDocument, "blocks"> | null = null;
   private worker: Worker | null = null;
   private observer: IntersectionObserver | null = null;
   private activeHeading = "";
@@ -48,7 +48,9 @@ export class Reader {
   /** 首屏先显示实际正文，再逐帧追加合法块；整篇文档保留在 DOM 中以支持复制和全文搜索。 */
   show(document: ReaderDocument, onFirstPaint: () => void): Promise<void> {
     this.dispose();
-    this.current = document;
+    // DOM 构建后只保留导航及资源元数据，不能让整篇 HTML 字符串随阅读会话常驻。
+    const { blocks, ...metadata } = document;
+    this.current = metadata;
     this.complete = false;
     this.article.replaceChildren();
     this.article.dataset.revision = String(document.revision);
@@ -75,34 +77,37 @@ export class Reader {
         }
       }
     }, { root: this.viewport, rootMargin: "600px 0px" });
-    this.finished = (async () => {
-      let index = 0;
-      let painted = false;
-      while (index < document.blocks.length && epoch === this.epoch) {
-        const start = performance.now();
-        // 浏览器按渲染批次跳过离屏布局，避免每个小段都成为独立布局容器。
-        const chunk = window.document.createElement("div"); chunk.className = "md-chunk";
-        let bytes = 0;
-        do {
-          const section = window.document.createElement("section");
-          section.className = "md-block";
-          section.dataset.block = String(index);
-          section.innerHTML = document.blocks[index];
-          bytes += document.blocks[index].length;
-          this.prepareBlock(section);
-          chunk.append(section);
-          index++;
-        } while (index < document.blocks.length && performance.now() - start < 5 && bytes < 30_000);
-        this.article.append(chunk);
-        await frame();
-        if (!painted && epoch === this.epoch) { await frame(); painted = true; if (epoch === this.epoch) onFirstPaint(); }
-      }
-      if (epoch !== this.epoch) return;
-      this.complete = true;
-      if (!painted) onFirstPaint();
-      if (this.query) this.search(this.query);
-    })();
+    this.finished = this.appendBlocks(blocks, epoch, onFirstPaint);
     return this.finished;
+  }
+
+  /** 隔离临时渲染作用域，避免常驻观察器与正文数组、首屏回调共享闭包。 */
+  private async appendBlocks(blocks: string[], epoch: number, onFirstPaint: () => void): Promise<void> {
+    let index = 0;
+    let painted = false;
+    while (index < blocks.length && epoch === this.epoch) {
+      const start = performance.now();
+      // 浏览器按渲染批次跳过离屏布局，避免每个小段都成为独立布局容器。
+      const chunk = window.document.createElement("div"); chunk.className = "md-chunk";
+      let bytes = 0;
+      do {
+        const section = window.document.createElement("section");
+        section.className = "md-block";
+        section.dataset.block = String(index);
+        section.innerHTML = blocks[index];
+        bytes += blocks[index].length;
+        this.prepareBlock(section);
+        chunk.append(section);
+        index++;
+      } while (index < blocks.length && performance.now() - start < 5 && bytes < 30_000);
+      this.article.append(chunk);
+      await frame();
+      if (!painted && epoch === this.epoch) { await frame(); painted = true; if (epoch === this.epoch) onFirstPaint(); }
+    }
+    if (epoch !== this.epoch) return;
+    this.complete = true;
+    if (!painted) onFirstPaint();
+    if (this.query) this.search(this.query);
   }
 
   /** 统一添加复制操作和资源占位；源文档无法提供按钮或改变此处行为。 */
@@ -285,6 +290,8 @@ export class Reader {
     for (const url of this.blobs.values()) URL.revokeObjectURL(url);
     this.blobs.clear();
     this.ranges = []; this.complete = false;
+    this.current = null;
+    this.finished = Promise.resolve();
     window.clearTimeout(this.searchTimer);
     CSS.highlights.delete("matches"); CSS.highlights.delete("current-match");
   }
