@@ -135,6 +135,7 @@ function applyPreferences(): void {
 
 /** 小窗口使用临时目录抽屉，按钮反映实际可见性，桌面目录偏好仍单独保留。 */
 function syncOutlineButton(): void {
+  if (!preferences) return;
   document.querySelector('[data-action="outline"]')!.setAttribute("aria-pressed", String(narrowLayout.matches ? app.classList.contains("outline-drawer") : preferences.snapshot.outline));
 }
 
@@ -341,10 +342,11 @@ function toggleSettings(refresh = true): void {
 
 function toggleSearch(show: boolean): void {
   if (show && !current) return;
+  clearTimeout(searchTimer); searchStart = null;
   document.querySelector<HTMLElement>("#search-bar")!.hidden = !show;
   const input = document.querySelector<HTMLInputElement>("#search-input")!;
-  if (show) { if (settingsOpen) toggleSettings(); input.focus(); input.select(); }
-  else { reader.search(""); pane.focus({ preventScroll: true }); }
+  if (show) { if (settingsOpen) toggleSettings(); reader.search(input.value); input.focus(); input.select(); }
+  else { reader.search(""); document.querySelector("#search-count")!.textContent = ""; pane.focus({ preventScroll: true }); }
 }
 
 /** 关闭成功才清理阅读界面；旧关闭不能覆盖此后发起的新打开请求。 */

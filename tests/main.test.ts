@@ -47,7 +47,7 @@ describe("关闭文章的页面与请求边界", () => {
     expect(document.querySelector<HTMLElement>("#article")!.hidden).toBe(true);
     expect(document.querySelector<HTMLElement>("#search-bar")!.hidden).toBe(true);
     expect(input.value).toBe(""); expect(document.querySelector("#search-count")!.textContent).toBe("");
-    expect(native.search).toHaveBeenCalledExactlyOnceWith("");
+    expect(native.search).toHaveBeenLastCalledWith(""); expect(native.search).not.toHaveBeenCalledWith("阅读");
     expect(document.querySelector("#read-progress")!.textContent).toBe("—");
     expect(document.querySelector("#document-name")!.getAttribute("title")).toBeNull();
     expect(document.querySelector("#outline-list")!.textContent).toContain("打开文章后");
@@ -114,6 +114,7 @@ describe("关闭文章的页面与请求边界", () => {
 });
 let remoteSession: Session;
 let narrowViewport: { matches: boolean; addEventListener: ReturnType<typeof vi.fn> };
+const documentListeners: [string, EventListenerOrEventListenerObject, boolean | AddEventListenerOptions | undefined][] = [];
 
 /** 手动控制 IPC 或排版完成时刻，确保竞态每次都以相同顺序发生。 */
 function deferred<T>() {
@@ -131,6 +132,11 @@ const settle = async () => { for (let index = 0; index < 30; index++) await Prom
 
 beforeEach(async () => {
   vi.resetModules(); vi.useFakeTimers(); vi.clearAllMocks(); native.handlers.clear();
+  // 每次导入都会安装主窗口快捷键；清理测试拥有的监听器，避免旧控制器响应下一例的按键。
+  const addListener = document.addEventListener.bind(document);
+  vi.spyOn(document, "addEventListener").mockImplementation((type, listener, options) => {
+    documentListeners.push([type, listener, options]); addListener(type, listener, options);
+  });
   document.body.innerHTML = '<div id="app"></div>';
   narrowViewport = { matches: false, addEventListener: vi.fn() };
   vi.stubGlobal("matchMedia", (query: string) => query === "(max-width: 950px)" ? narrowViewport : { matches: false, addEventListener() {} });
@@ -206,6 +212,29 @@ describe("阅读工具的焦点与可见状态", () => {
   });
 });
 
+describe("搜索的显示与输入合并", () => {
+  const search = () => document.querySelector<HTMLButtonElement>('[data-action="search"]')!.click();
+  const closeSearch = () => document.querySelector<HTMLButtonElement>('[data-action="close-search"]')!.click();
+  const input = () => document.querySelector<HTMLInputElement>("#search-input")!;
+
+  it("关闭时移除旧结果提示，重新打开后用保留的搜索词恢复结果", async () => {
+    search(); input().value = "阅读"; input().dispatchEvent(new Event("input", { bubbles: true }));
+    await vi.advanceTimersByTimeAsync(40); expect(native.search).toHaveBeenLastCalledWith("阅读");
+    document.querySelector("#search-count")!.textContent = "1 / 8";
+    closeSearch(); expect(document.querySelector("#search-count")!.textContent).toBe("");
+    search(); expect(input().value).toBe("阅读"); expect(native.search).toHaveBeenLastCalledWith("阅读");
+    expect(document.activeElement).toBe(input());
+  });
+
+  it("输入合并尚未触发时关闭，迟到计时器不能在隐藏搜索栏后重新高亮", async () => {
+    search(); native.search.mockClear();
+    input().value = "尚未提交"; input().dispatchEvent(new Event("input", { bubbles: true }));
+    closeSearch(); await vi.advanceTimersByTimeAsync(100);
+    expect(native.search).toHaveBeenCalledExactlyOnceWith("");
+    expect(document.querySelector<HTMLElement>("#search-bar")!.hidden).toBe(true);
+  });
+});
+
 describe("最近目录与关闭导航", () => {
   it("切换最近目录仅更换文件树，保留正文", async () => {
     await prepareFolders(async (path) => [{ path: `${path}\\样例.md`, name: path === folders[0] ? "第一篇.md" : "第二篇.md", directory: false }]);
@@ -246,7 +275,10 @@ describe("最近目录与关闭导航", () => {
   });
 });
 
-afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllGlobals(); });
+afterEach(() => {
+  for (const [type, listener, options] of documentListeners.splice(0)) document.removeEventListener(type, listener, options);
+  vi.restoreAllMocks(); vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllGlobals();
+});
 
 describe("迁移健康确认", () => {
   it("原生打开失败时不以空界面代替恢复成功", async () => {
