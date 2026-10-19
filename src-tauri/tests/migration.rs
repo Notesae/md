@@ -187,6 +187,47 @@ fn health_commit_and_restart_preserve_source_until_explicit_cleanup() {
     );
 }
 
+// 启动探针代表健康提交已成功。损坏目标不得留下探针，源目录也不得被清理。
+#[test]
+fn failed_health_does_not_publish_startup_probe() {
+    let (_temp, source, record) = setup();
+    let target = _temp.path().join("target");
+    migration::prepare_migration(&record, &target, vec![]).unwrap();
+    migration::resume_migration(&record).unwrap();
+    fs::write(target.join("state/preferences.json"), "{invalid").unwrap();
+    assert!(migration::commit_ready(&record, &target, Some("{\"processId\":1}")).is_err());
+    assert!(!target.join("temp/startup-probe.json").exists());
+    assert!(source.join("state/preferences.json").exists());
+    assert_eq!(
+        storage::load_bootstrap(&record)
+            .unwrap()
+            .migration
+            .unwrap()
+            .phase,
+        MigrationPhase::AwaitingHealth
+    );
+}
+
+// 探针落在健康提交之后、旧目录清理之前，避免用清理耗时冒充启动，也不提前删除源。
+#[test]
+fn startup_probe_follows_health_commit_and_keeps_source() {
+    let (_temp, source, record) = setup();
+    let target = _temp.path().join("target");
+    migration::prepare_migration(&record, &target, vec![]).unwrap();
+    migration::resume_migration(&record).unwrap();
+    migration::commit_ready(&record, &target, Some("{\"processId\":7}")).unwrap();
+    assert_eq!(
+        fs::read_to_string(target.join("temp/startup-probe.json")).unwrap(),
+        "{\"processId\":7}"
+    );
+    assert!(source.exists());
+    let saved = storage::load_bootstrap(&record).unwrap();
+    assert!(saved.migration.is_none());
+    assert_eq!(saved.pending_cleanup.unwrap().path, source);
+    migration::commit_ready(&record, &source, None).unwrap();
+    assert!(!source.join("temp/startup-probe.json").exists());
+}
+
 // 目标必要状态损坏时健康提交必须失败，原状态完整保留并允许下一启动回滚。
 #[test]
 fn invalid_target_state_cannot_commit_health_or_delete_source() {

@@ -11,7 +11,8 @@
     "desktop": "node scripts/desktop.mjs",
     "test:core": "node scripts/desktop.mjs test-core",
     "check:desktop": "node scripts/desktop.mjs check",
-    "build:desktop": "node scripts/desktop.mjs build"
+    "build:desktop": "node scripts/desktop.mjs build",
+    "test:phase6": "vitest run tests/phase6-contract.test.mjs tests/audit-rules.test.mjs tests/perf-stats.test.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "2.12.4",

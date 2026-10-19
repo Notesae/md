@@ -3,6 +3,11 @@ import { spawn } from "node:child_process";
 import { readdir, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 
+if (process.platform !== "win32") {
+  console.error("WebView 数据位置检查需要 Windows 程序。它也不代替标准安装的系统盘审计。");
+  process.exit(2);
+}
+
 // WebDriver 会覆盖 WebView2 的用户数据目录，此项单独运行不受驱动干预的程序。
 const root = process.cwd();
 const data = path.join(root, ".runtime/desktop-smoke/data");
@@ -21,7 +26,7 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
   assert.ok(entries.some((name) => /Preferences$|Local State$|Cookies$/.test(name)), "用户数据目录没有出现真实 WebView2 文件");
-  const evidence = { result: "passed", binary: app.spawnfile, pid: app.pid, root: data, userDataDirectory: path.join(data, "webview"), files: entries.filter((name) => /Preferences$|Local State$|Cookies$/.test(name)) };
+  const evidence = { result: "passed", specPassed: false, standardInstallAudit: "not-run", binary: app.spawnfile, pid: app.pid, root: data, userDataDirectory: path.join(data, "webview"), files: entries.filter((name) => /Preferences$|Local State$|Cookies$/.test(name)) };
   await mkdir(path.join(root, ".reports"), { recursive: true });
   await writeFile(path.join(root, ".reports/storage-audit.json"), JSON.stringify(evidence, null, 2));
   console.log(JSON.stringify(evidence, null, 2));

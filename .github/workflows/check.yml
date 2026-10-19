@@ -1,4 +1,4 @@
-name: Windows quality
+name: Quality
 
 on:
   push:
@@ -10,19 +10,45 @@ permissions:
   contents: read
 
 concurrency:
-  group: windows-${{ github.ref }}
+  group: quality-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  desktop:
-    runs-on: windows-latest
-    timeout-minutes: 35
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Install locked frontend dependencies
+        run: npm ci
+      - name: Rust formatting
+        run: npm run desktop -- fmt -- --check
+      - name: Frontend typecheck and production build
+        run: npm run build
+      - name: Frontend and phase 6 contract tests
+        run: npm test
+      - name: Storage and document core tests
+        run: npm run test:core -- --locked
+
+  desktop:
+    runs-on: windows-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
       - name: Install locked frontend dependencies
         run: npm ci
       - name: Rust formatting
@@ -35,5 +61,11 @@ jobs:
         run: npm run test:core -- --locked
       - name: Desktop compilation
         run: npm run check:desktop -- --locked
-      - name: Release desktop build
-        run: npm run build:desktop -- --no-bundle
+      - name: Release installer
+        run: npm run build:desktop
+      - name: Current-user install, association, and uninstall paths
+        shell: powershell
+        run: |
+          $installer = Get-ChildItem .tools\target\release\bundle\nsis\*-setup.exe | Select-Object -First 1
+          if (-not $installer) { throw "没有找到 NSIS 安装包" }
+          & .\tests\install-audit.ps1 -Installer $installer.FullName -WorkRoot (Join-Path (Get-Location) '.runtime\install-audit')

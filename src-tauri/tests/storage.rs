@@ -1,4 +1,7 @@
-use md_reader::storage::{initialize_root, load_state, save_state, validate_local_path, AppState};
+use md_reader::storage::{
+    initialize_root, load_state, save_bootstrap, save_state, validate_local_path, AppState,
+    Bootstrap,
+};
 use std::fs;
 
 // 验证首次数据根只接管空目录，拒绝把原文目录误认为应用数据。
@@ -81,6 +84,42 @@ fn bootstrap_recovers_without_unbounded_temp_files() {
         data
     );
     assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 3);
+}
+
+// 单份引导不超过 16KiB；两份记录和两份原子暂存同时存在时也不超过 64KiB。
+#[test]
+fn bootstrap_payload_stays_within_single_and_total_budget() {
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path().join("data");
+    let owner = initialize_root(&data).unwrap();
+    let path = temp.path().join("bootstrap.json");
+    let mut record = Bootstrap {
+        format_version: 1,
+        root: data,
+        instance_id: owner.instance_id,
+        notice: Some("x".repeat(16 * 1024)),
+        ..Default::default()
+    };
+    assert!(save_bootstrap(&path, &record).is_err());
+    record.notice = None;
+    save_bootstrap(&path, &record).unwrap();
+    let names = [
+        "bootstrap.json",
+        "bootstrap.recovery.json",
+        "bootstrap.pending",
+        "bootstrap.recovery.pending",
+    ];
+    let mut total = 0u64;
+    for name in names {
+        let file = temp.path().join(name);
+        if file.exists() {
+            let len = fs::metadata(&file).unwrap().len();
+            assert!(len <= 16 * 1024, "{name} 超过 16KiB");
+            total += len;
+        }
+    }
+    assert!(total <= 64 * 1024);
+    assert!(!temp.path().join("bootstrap.pending").exists());
 }
 
 // 曾经保存过的必要状态丢失时必须报错，不能默默生成一份空历史。
