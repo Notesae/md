@@ -24,3 +24,24 @@ export interface Session {
   state: AppState;
   version: string;
 }
+
+/** 后台全文解析后的文档；所有块均为经过隔离的 HTML，图片与外链仍需显式授权。 */
+export interface ReaderDocument {
+  path: string;
+  title: string;
+  bytes: number;
+  revision: number;
+  readMs: number;
+  parseMs: number;
+  blocks: string[];
+  headings: { id: string; title: string; level: number; block: number }[];
+  images: { url: string; remote: boolean }[];
+  links: string[];
+}
+
+/** 后台只返回当前目录的一层，展开子目录时再查询，禁止递归预读文章。 */
+export interface DirectoryEntry {
+  path: string;
+  name: string;
+  directory: boolean;
+}

@@ -40,9 +40,9 @@ if (process.platform === "win32" && existsSync(vcvars)) {
 const [action = "dev", ...args] = process.argv.slice(2);
 let command = process.execPath;
 let commandArgs = [path.join(root, "node_modules", "@tauri-apps", "cli", "tauri.js"), action, ...args];
-if (["test-core", "check", "test", "fmt", "clippy"].includes(action)) {
+if (["cargo", "test-core", "check", "test", "fmt", "clippy"].includes(action)) {
   command = "cargo";
-  commandArgs = action === "test-core"
+  commandArgs = action === "cargo" ? args : action === "test-core"
     ? ["test", "--manifest-path", "src-tauri/Cargo.toml", "--no-default-features", ...args]
     : [action, "--manifest-path", "src-tauri/Cargo.toml", ...args];
 }
