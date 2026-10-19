@@ -22,4 +22,6 @@ npm run desktop -- build --debug --no-bundle
 
 开发脚本优先使用 `.tools/` 下的本地工具，否则使用系统工具；Cargo 构建产物和可控临时目录定位到工作盘 `.tools/`。不修改全局 PATH。本项目不使用 Maven。
 
+没有全局 npm 时，可在 `.tools/bin/npm.cmd` 提供调用本地 npm CLI 的入口；`node scripts/desktop.mjs build --no-bundle` 会自动将该目录加入子进程 PATH。Rust/Cargo、MSVC 和驱动的当前验证版本见 [验证记录](docs/VALIDATION.md)，本地工具不进入仓库。
+
 `tests/desktop-smoke.mjs` 使用真正的桌面程序和 Tauri 官方驱动；测试前用 `src-tauri/examples/prepare_test.rs` 创建 `.runtime/desktop-smoke`，并在 `.tools/cargo/bin` 与 `.tools/webdriver` 提供对应驱动。`tests/storage-audit.mjs` 独立检查实际 WebView 数据位置。完整结果和未测项见 [验证记录](docs/VALIDATION.md) 与 [验收矩阵](docs/ACCEPTANCE.md)。

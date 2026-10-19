@@ -11,6 +11,8 @@ for (const key of Object.keys(env)) if (key.toLowerCase() === "path") delete env
 env.PATH = process.env.PATH ?? "";
 const tools = path.join(root, ".tools");
 for (const folder of ["tmp", "cargo", "rustup", "target"]) mkdirSync(path.join(tools, folder), { recursive: true });
+// 可选的工作盘 npm 入口供 Tauri 的前端构建钩子使用，避免依赖全局安装。
+if (existsSync(path.join(tools, "bin", "npm.cmd"))) env.PATH = `${path.join(tools, "bin")};${env.PATH}`;
 if (existsSync(path.join(tools, "cargo", "bin", "cargo.exe"))) {
   env.CARGO_HOME = path.join(tools, "cargo");
   env.RUSTUP_HOME = path.join(tools, "rustup");

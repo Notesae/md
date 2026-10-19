@@ -144,15 +144,14 @@ try {
   await new Promise((resolve) => setTimeout(resolve, 300));
   assert.equal(await script("return document.querySelector('.outline-link[aria-current]')?.textContent;"), beforeRefresh.heading);
   checks.push("设置页期间文件变化延迟刷新并保留原阅读锚点");
-  // 只延迟一次真实 IPC 的返回，稳定复现自动刷新已发出后用户进入设置的顺序。
-  await script(`const bridge = window.__TAURI_INTERNALS__; const original = bridge.invoke;
-    bridge.invoke = function(name, args, options) {
-      const pending = original.call(bridge, name, args, options);
-      if (name !== 'open_document') return pending;
-      bridge.invoke = original;
-      return pending.then(value => new Promise(resolve => {
-        window.__MD_RELEASE_REFRESH = () => { delete window.__MD_RELEASE_REFRESH; resolve(value); };
-      }));
+  // Tauri 的 invoke 不可替换；通过回调表只延迟一次真实文档结果，保留原生读盘与解析。
+  await script(`const callbacks = window.__TAURI_INTERNALS__.callbacks; const original = callbacks.set;
+    callbacks.set = function(id, callback) {
+      return original.call(this, id, value => {
+        if (!Array.isArray(value?.blocks)) return callback(value);
+        callbacks.set = original;
+        window.__MD_RELEASE_REFRESH = () => { delete window.__MD_RELEASE_REFRESH; callback(value); };
+      });
     };`);
   await appendFile(watched, "\n## 刷新返回竞态验证\n\n迟到结果不应关闭设置。\n");
   await until(() => script("return typeof window.__MD_RELEASE_REFRESH === 'function';"), "没有捕获待返回的刷新结果");
@@ -168,6 +167,8 @@ try {
   await script("Array.from(document.querySelectorAll('#file-tree .file-row')).find(button => button.textContent.includes('welcome.md')).click();");
   await until(() => script("return document.querySelector('#document-name').textContent === 'welcome.md';"), "测试后未恢复样例文章");
   await command("POST", `/session/${sessionId}/window/rect`, { width: 800, height: 700 });
+  // WebDriver 的窗口尺寸可能只改变 WebView 视口；另行调整真实主窗口以验证布局落盘。
+  await invoke("plugin:window|set_size", { label: "main", value: { Logical: { width: 800, height: 700 } } });
   await screenshot("narrow");
   await click('[data-action="outline"]');
   assert.ok(await script("const outline = document.querySelector('.outline'); return getComputedStyle(outline).display !== 'none' && outline.getBoundingClientRect().right <= innerWidth;"));
@@ -176,18 +177,23 @@ try {
   await click('[data-action="outline"]');
   // 在 180ms 合并窗口内立即关闭，验证最后一次修改仍由关闭协议保存。
   await click('[data-action="settings"]');
-  await script("const input = document.querySelector('#font-setting'); input.value = '20'; input.dispatchEvent(new Event('input', {bubbles:true})); setTimeout(() => window.__TAURI_INTERNALS__.invoke('plugin:window|close', {label:'main'}), 0);");
+  await script("const input = document.querySelector('#font-setting'); input.value = '20'; input.dispatchEvent(new Event('input', {bubbles:true})); setTimeout(() => window.__TAURI_INTERNALS__.invoke('plugin:window|close', {label:'main'}).catch(error => { window.__MD_CLOSE_ERROR = String(error); }), 0);");
   await until(async () => {
     const final = JSON.parse(await readFile(path.join(state.root, "state/preferences.json"), "utf8"));
     return final.preferences.fontSize === 20 && final.window.width === 800;
   }, "关闭前最后一次偏好或窗口布局未保存");
-  checks.push("立即关闭窗口时保存尚在合并中的偏好与窗口布局");
+  await until(async () => {
+    try { return (await command("GET", `/session/${sessionId}/window/handles`)).length === 0; }
+    catch (error) { return /no such window|invalid session id|disconnected/i.test(String(error)); }
+  }, "保存完成后主窗口没有实际关闭");
+  checks.push("立即关闭时保存合并中的偏好与原生窗口布局，并实际关闭主窗口");
   await writeFile(path.join(report, "desktop-smoke.json"), JSON.stringify({ binary, date: new Date().toISOString(), checks, result: "passed" }, null, 2));
   console.log(JSON.stringify({ result: "passed", checks }, null, 2));
 } catch (error) {
   const trace = sessionId ? await invoke("get_session").catch(() => null) : null;
+  const windowState = sessionId ? await script("return {innerWidth, innerHeight, outerWidth, outerHeight, closeError: window.__MD_CLOSE_ERROR, notice: document.querySelector('#notice-text')?.textContent};").catch(() => null) : null;
   if (sessionId) await screenshot("failure").catch(() => {});
-  await writeFile(path.join(report, "desktop-smoke.json"), JSON.stringify({ binary, checks, result: "failed", error: String(error), driverLog, trace, positions }, null, 2));
+  await writeFile(path.join(report, "desktop-smoke.json"), JSON.stringify({ binary, checks, result: "failed", error: String(error), driverLog, trace, positions, windowState }, null, 2));
   console.error(error); process.exitCode = 1;
 } finally {
   if (sessionId) await command("DELETE", `/session/${sessionId}`).catch(() => {});

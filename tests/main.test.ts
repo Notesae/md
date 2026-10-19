@@ -4,12 +4,12 @@ import type { ReaderDocument, ReadingPosition, Session } from "../src/types";
 
 const native = vi.hoisted(() => ({
   invoke: vi.fn(), handlers: new Map<string, (event: { payload: string }) => void>(),
-  show: vi.fn(), restore: vi.fn(), capture: vi.fn(),
+  show: vi.fn(), restore: vi.fn(), capture: vi.fn(), closeRequested: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke, isTauri: () => true }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: async (name: string, handler: (event: { payload: string }) => void) => { native.handlers.set(name, handler); return () => {}; } }));
-vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ setTitle: async () => {}, onCloseRequested: async () => () => {} }) }));
+vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ setTitle: async () => {}, onCloseRequested: native.closeRequested }) }));
 vi.mock("../src/storage-settings", () => ({ StorageSettings: class { activate() {} deactivate() {} } }));
 // 只替换排版和原生边界；真实主窗口控制器、DOM 事件与异步打开流程参与测试。
 vi.mock("../src/reader", () => ({ Reader: class {
@@ -49,6 +49,7 @@ beforeEach(async () => {
   vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {} }));
   vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => { callback(0); return 0; });
   native.capture.mockReturnValue({ ...anchor }); native.restore.mockResolvedValue(undefined); native.show.mockResolvedValue(undefined);
+  native.closeRequested.mockResolvedValue(() => {});
   const session: Session = {
     root: "H:\\应用数据\\MD", version: "0.1.0", storageNotice: null,
     state: { preferences: { theme: "light", fontSize: 18, contentWidth: 780, sidebar: true, outline: true, persistentCache: true, cacheMib: 256 },
@@ -121,5 +122,31 @@ describe("文件刷新与设置页交错", () => {
     expect(opens()).toHaveLength(3);
     expect(document.querySelector("#document-name")!.textContent).toBe("另一篇.md");
     expect(document.querySelector("#article")!.textContent).toContain("正文修订 3");
+  });
+});
+
+describe("异步关闭保存", () => {
+  it("等待最后一次偏好保存后放行原关闭请求，同时拦截重复关闭", async () => {
+    const saving = deferred<void>(); const original = native.invoke.getMockImplementation()!;
+    native.invoke.mockImplementation((name: string) => name === "save_preferences" ? saving.promise : original(name));
+    const input = document.querySelector<HTMLInputElement>("#font-setting")!;
+    input.value = "20"; input.dispatchEvent(new Event("input", { bubbles: true }));
+    const first = { preventDefault: vi.fn() }; const duplicate = { preventDefault: vi.fn() };
+    const handler = native.closeRequested.mock.calls[0][0];
+    let finished = false; const closing = handler(first).then(() => { finished = true; }); await settle();
+    expect(finished).toBe(false); await handler(duplicate); expect(duplicate.preventDefault).toHaveBeenCalledOnce();
+    saving.resolve(); await closing; expect(first.preventDefault).not.toHaveBeenCalled();
+  });
+
+  it("保存失败时保留窗口并允许再次关闭重试", async () => {
+    const original = native.invoke.getMockImplementation()!;
+    native.invoke.mockImplementation((name: string) => name === "save_preferences" ? Promise.reject(new Error("磁盘不可写")) : original(name));
+    const input = document.querySelector<HTMLInputElement>("#font-setting")!;
+    input.value = "20"; input.dispatchEvent(new Event("input", { bubbles: true }));
+    const handler = native.closeRequested.mock.calls[0][0]; const failed = { preventDefault: vi.fn() };
+    await handler(failed); expect(failed.preventDefault).toHaveBeenCalledOnce();
+    expect(document.querySelector("#notice-text")!.textContent).toContain("关闭前保存失败");
+    native.invoke.mockImplementation(original); const retry = { preventDefault: vi.fn() };
+    await handler(retry); expect(retry.preventDefault).not.toHaveBeenCalled();
   });
 });

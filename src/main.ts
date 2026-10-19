@@ -369,12 +369,12 @@ async function start(): Promise<void> {
     });
     session = await invoke<Session>("get_session");
     preferences = new PreferenceStore(session.state.preferences, (preferences) => invoke<void>("save_preferences", { preferences }), (error) => message(`设置未保存：${String(error)}`, true));
-    // 拦截关闭并提交合并中的偏好和进度；成功后移除监听，让原生关闭保存窗口尺寸。
+    // Tauri 会等待异步处理后销毁窗口；成功时放行，失败或重复请求才阻止关闭。
     let closing = false;
-    const stopClose = await getCurrentWindow().onCloseRequested(async (event) => {
-      event.preventDefault(); if (closing) return; closing = true;
-      try { await preferences.flush(); await persistPosition(); stopClose(); await getCurrentWindow().close(); }
-      catch (error) { closing = false; message(`关闭前保存失败，请重试：${String(error)}`, true); }
+    await getCurrentWindow().onCloseRequested(async (event) => {
+      if (closing) { event.preventDefault(); return; } closing = true;
+      try { await preferences.flush(); await persistPosition(); }
+      catch (error) { event.preventDefault(); closing = false; message(`关闭前保存失败，请重试：${String(error)}`, true); }
     });
     applyPreferences(); renderRecent();
     document.querySelector("#data-root")!.textContent = displayPath(session.root);
