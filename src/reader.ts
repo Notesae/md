@@ -70,6 +70,8 @@ export class Reader {
             element.style.minHeight = `${element.getBoundingClientRect().height}px`;
             URL.revokeObjectURL(this.blobs.get(element)!);
             this.blobs.delete(element);
+            // 移除聚焦图片前交回阅读区，避免键盘滚动落到禁止滚动的 body。
+            if (element.contains(window.document.activeElement)) this.viewport.focus({ preventScroll: true });
             element.textContent = element.dataset.alt ?? "本地图片";
           }
         } else if (entry.isIntersecting) {

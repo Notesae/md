@@ -41,7 +41,7 @@ const show = async (remote = false, revision = 1) => reader.show(value(remote, r
 
 beforeEach(async () => {
   vi.clearAllMocks(); native.invoke.mockReset(); liveUrls.clear(); workers.length = 0; workerFault = null; urlSequence = 0;
-  document.body.innerHTML = '<main><article></article></main>'; article = document.querySelector("article")!;
+  document.body.innerHTML = '<main tabindex="0"><article></article></main>'; article = document.querySelector("article")!;
   vi.stubGlobal("CSS", { highlights: new Map() });
   vi.stubGlobal("IntersectionObserver", TestObserver); vi.stubGlobal("Worker", TestWorker);
   vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => { callback(0); return 0; });
@@ -110,6 +110,12 @@ describe("图片失败恢复与 URL 生命周期", () => {
     let resolve!: (value: ArrayBuffer) => void; native.invoke.mockReturnValueOnce(new Promise(done => { resolve = done; }));
     retry().focus(); retry().click(); other.focus(); resolve(new ArrayBuffer(3)); await settle(); expect(document.activeElement).toBe(other);
     failedImage(); expect(document.activeElement).toBe(other);
+  });
+
+  it("离屏回收已获焦点的图片时，把焦点交回阅读区以继续键盘滚动", async () => {
+    visible(slot()); await settle(); failedImage(); retry().focus(); retry().click(); await settle();
+    expect(document.activeElement).toBe(slot().querySelector("img"));
+    visible(slot(), false); expect(document.activeElement).toBe(article.parentElement); expect(liveUrls.size).toBe(0);
   });
 });
 
