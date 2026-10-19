@@ -13,7 +13,8 @@ const unit = "## 阅读的节奏\n\n文字留在原处，目光回到此刻。�
 const body = unit.repeat(Math.floor(100_000 / Buffer.byteLength(unit)));
 await writeFile(article, body + " ".repeat(100_000 - Buffer.byteLength(body)));
 await writeFile(path.join(root, "owner.json"), JSON.stringify({ app_id: "io.notesae.mdreader", format_version: 1, instance_id: instance, state_written: true }));
-await writeFile(path.join(root, "state/preferences.json"), JSON.stringify({ preferences: { theme: "light", fontSize: 18, contentWidth: 780, sidebar: true, outline: true, persistentCache: true, cacheMib: 256 }, recent: [], folders: [path.dirname(article)], lastFile: article, window: { width: 1280, height: 860, maximized: false } }));
+// 与桌面授权采用相同的规范化文档路径，不能把打开失败后的空界面当成启动完成。
+await writeFile(path.join(root, "state/preferences.json"), JSON.stringify({ preferences: { theme: "light", fontSize: 18, contentWidth: 780, sidebar: true, outline: true, persistentCache: true, cacheMib: 256 }, recent: [], folders: [path.toNamespacedPath(path.dirname(article))], lastFile: path.toNamespacedPath(article), window: { width: 1280, height: 860, maximized: false } }));
 for (const name of ["bootstrap.json", "bootstrap.recovery.json"]) await writeFile(path.join(bootstrap, name), JSON.stringify({ format_version: 1, root, instance_id: instance }));
 const binary = path.resolve(process.argv[2] ?? ".tools/target/release/md-reader.exe");
 const environment = { ...process.env, MD_STARTUP_PROBE: "1", MD_BOOTSTRAP_DIR: bootstrap, TEMP: path.join(workspace, ".tools/tmp"), TMP: path.join(workspace, ".tools/tmp") };

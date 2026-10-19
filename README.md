@@ -27,3 +27,13 @@ npm run desktop -- build --debug --no-bundle
 没有全局 npm 时，可在 `.tools/bin/npm.cmd` 提供调用本地 npm CLI 的入口；`node scripts/desktop.mjs build --no-bundle` 会自动将该目录加入子进程 PATH。Rust/Cargo、MSVC 和驱动的当前验证版本见 [验证记录](docs/VALIDATION.md)，本地工具不进入仓库。
 
 `tests/desktop-smoke.mjs` 使用真正的桌面程序和 Tauri 官方驱动；测试前用 `src-tauri/examples/prepare_test.rs` 创建 `.runtime/desktop-smoke`，并在 `.tools/cargo/bin` 与 `.tools/webdriver` 提供对应驱动。`tests/storage-audit.mjs` 独立检查实际 WebView 数据位置。完整结果和未测项见 [验证记录](docs/VALIDATION.md) 与 [验收矩阵](docs/ACCEPTANCE.md)。
+
+原生维护回归连接 release 程序自身的 WebView2 调试端口，不覆盖其数据目录，也无需下载 Chromium：
+
+```powershell
+node tests/native-maintenance.mjs .tools/target/release/md-reader.exe
+```
+
+脚本创建独立归属的 `.runtime/native-maintenance/<随机实例>/`，执行真实设置入口、维护重启、状态恢复和故障阶段恢复。出现 `PICKER_PARENT=...` 时，在原生目录选择器选择打印的隔离父目录；脚本继续确认迁移并验证再次启动。`--recovery-only` 只运行无需操作选择器的故障场景，仍会启动真实窗口，不能替代完整回归，也不适用于禁止干扰桌面的验证场景。报告保存在 `.reports/native-maintenance.json`；测试数据和报告均不入库。前端测试只收集根目录 `tests/`，不会执行本地工具中的旧工程副本。
+
+当前迁移健康确认已经与首屏计时分离，只有完整正文、会话刷新及最后一次有效定位成功后才允许清理迁移源。后台回归覆盖打开/定位/会话失败、设置交错、目标损坏或归属改变、回滚与源保留。当前交付按预发布处理；完整性能、最终原生维护、安装卸载及系统盘写入验收仍以 [验收矩阵](docs/ACCEPTANCE.md) 为准。

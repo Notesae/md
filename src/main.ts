@@ -75,13 +75,30 @@ let noticeTimer = 0;
 let preferences: PreferenceStore;
 let storageView: StorageSettings | null = null;
 let readinessSent = false;
+// 会话读取与定位各有完成边界；设置切换或新请求会使旧定位失去健康确认资格。
+let healthySessionRequest = 0;
+let positionEpoch = 0;
 
-/** 首屏出现后确认新数据位置健康，未确认前后台始终保留迁移源。 */
+/** 正文与阅读位置恢复完成后确认健康，未确认前后台始终保留迁移源。 */
 async function confirmReady(): Promise<void> {
   if (readinessSent) return;
   readinessSent = true;
   try { const notice = await invoke<string | null>("app_ready"); if (notice) message(notice, true); }
-  catch (error) { message(`启动健康确认失败：${String(error)}`, true); }
+  catch (error) { readinessSent = false; message(`启动健康确认失败：${String(error)}`, true); }
+}
+
+/** 只让当前会话的最后一次成功定位确认健康，避免旧异步回调提前清理迁移源。 */
+async function restoreReadingPosition(saved: ReadingPosition, ticket = request): Promise<void> {
+  const epoch = ++positionEpoch;
+  restoringPosition = saved;
+  try {
+    await reader.restorePosition(saved);
+    if (ticket === request && epoch === positionEpoch && healthySessionRequest === ticket && !settingsOpen) void confirmReady();
+  } catch (error) {
+    if (ticket === request && epoch === positionEpoch) throw error;
+  } finally {
+    if (ticket === request && epoch === positionEpoch) restoringPosition = undefined;
+  }
 }
 
 function message(text: string, persistent = false): void {
@@ -230,6 +247,7 @@ async function persistPosition(): Promise<void> {
 async function openPath(path: string, restore?: ReadingPosition, kind: "open" | "refresh" = "open"): Promise<void> {
   refreshOnReturn = false;
   const ticket = ++request; const start = performance.now();
+  healthySessionRequest = 0; positionEpoch++;
   performance.clearMeasures("md:first-paint"); performance.clearMeasures("md:full-text");
   try {
     await persistPosition().catch((error) => message(`阅读进度未保存：${String(error)}`, true));
@@ -256,19 +274,20 @@ async function openPath(path: string, restore?: ReadingPosition, kind: "open" | 
       if (ticket !== request) return;
       performance.measure("md:first-paint", { start, end: performance.now(), detail: timing });
       app.classList.remove("opening"); document.querySelector("#document-status")!.textContent = `${sizeLabel(result.bytes)} · 首屏 ${(performance.now() - start).toFixed(0)} ms`;
-      void confirmReady();
     });
     if (ticket !== request) return;
     performance.measure("md:full-text", { start, end: performance.now(), detail: timing });
     document.querySelector<HTMLElement>("#document-end")!.hidden = settingsOpen;
-    if (!settingsOpen) await reader.restorePosition(saved);
     await refreshSession(); if (ticket !== request) return;
+    healthySessionRequest = ticket;
     renderRecent(); updateProgress();
     if (result.cacheError) message(`应用缓存未写入，正文仍可阅读：${result.cacheError}`, true);
     if (!document.querySelector<HTMLElement>("#search-bar")!.hidden) reader.search(document.querySelector<HTMLInputElement>("#search-input")!.value);
+    // 首屏绘制只用于计时；必要状态尚未恢复时不能授权后台清理迁移源。
+    if (!settingsOpen) await restoreReadingPosition(saved, ticket);
   } catch (error) {
-    if (ticket === request) { message(`无法打开文章：${String(error)}`, true); document.querySelector("#document-status")!.textContent = "打开失败，可重新选择文件"; }
-  } finally { if (ticket === request) { restoringPosition = undefined; app.classList.remove("opening"); } }
+    if (ticket === request) { restoringPosition = undefined; message(`无法打开文章：${String(error)}`, true); document.querySelector("#document-status")!.textContent = "打开失败，可重新选择文件"; }
+  } finally { if (ticket === request) { if (settingsOpen) restoringPosition = undefined; app.classList.remove("opening"); } }
 }
 
 /** 滚动只修改进度和目录状态，避免重建正文；磁盘写入另外合并。 */
@@ -280,6 +299,7 @@ function updateProgress(): void {
 }
 
 function toggleSettings(refresh = true): void {
+  positionEpoch++;
   if (!settingsOpen) settingsPosition = current ? restoringPosition ?? reader.capturePosition() : undefined;
   settingsOpen = !settingsOpen; app.classList.toggle("settings-open", settingsOpen);
   document.querySelector<HTMLElement>("#settings")!.hidden = !settingsOpen; reader.article.hidden = settingsOpen || !current;
@@ -295,7 +315,10 @@ function toggleSettings(refresh = true): void {
     storageView?.deactivate();
     const saved = settingsPosition; settingsPosition = undefined;
     if (refresh && refreshOnReturn && current) { refreshOnReturn = false; void openPath(current.path, saved, "refresh"); }
-    else if (refresh && saved) void reader.restorePosition(saved);
+    else if (refresh && saved) {
+      void restoreReadingPosition(saved)
+        .catch((error) => message(`阅读位置恢复失败：${String(error)}`, true));
+    }
   }
 }
 
@@ -430,8 +453,10 @@ async function start(): Promise<void> {
     document.querySelector("#data-root")!.textContent = displayPath(session.root);
     document.querySelector("#version")!.textContent = `MD ${session.version} · 本地 Markdown 阅读器`;
     if (session.state.lastFile) await openPath(session.state.lastFile);
-    else { await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))); }
-    void confirmReady();
+    else {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+      void confirmReady();
+    }
     renderFolderView();
   } catch (error) { message(`无法恢复会话：${String(error)}`, true); }
 }

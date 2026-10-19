@@ -159,3 +159,89 @@ fn target_ready_with_changed_state_rolls_back() {
         26
     );
 }
+
+// 健康提交只持久化待清理任务；进程重启和重复确认都不能抢先删除源。
+#[test]
+fn health_commit_and_restart_preserve_source_until_explicit_cleanup() {
+    let (temp, source, record) = setup();
+    let target = temp.path().join("target");
+    let source_state = fs::read(source.join("state/preferences.json")).unwrap();
+    migration::prepare_migration(&record, &target, vec![]).unwrap();
+    migration::resume_migration(&record).unwrap();
+    let committed = migration::commit_health(&record).unwrap();
+    assert!(committed.migration.is_none());
+    assert_eq!(committed.pending_cleanup.as_ref().unwrap().path, source);
+    assert!(source.exists());
+    let restarted = migration::resume_migration(&record).unwrap();
+    assert_eq!(restarted.root, target);
+    migration::commit_health(&record).unwrap();
+    assert_eq!(
+        fs::read(source.join("state/preferences.json")).unwrap(),
+        source_state
+    );
+    migration::retry_cleanup(&record).unwrap();
+    assert!(!source.exists());
+    assert_eq!(
+        fs::read_to_string(temp.path().join("original.md")).unwrap(),
+        "原文不动"
+    );
+}
+
+// 目标必要状态损坏时健康提交必须失败，原状态完整保留并允许下一启动回滚。
+#[test]
+fn invalid_target_state_cannot_commit_health_or_delete_source() {
+    let (temp, source, record) = setup();
+    let target = temp.path().join("target");
+    let original = fs::read(source.join("state/preferences.json")).unwrap();
+    migration::prepare_migration(&record, &target, vec![]).unwrap();
+    migration::resume_migration(&record).unwrap();
+    fs::write(target.join("state/preferences.json"), "{invalid").unwrap();
+    assert!(migration::commit_health(&record).is_err());
+    assert_eq!(
+        storage::load_bootstrap(&record)
+            .unwrap()
+            .migration
+            .unwrap()
+            .phase,
+        MigrationPhase::AwaitingHealth
+    );
+    assert_eq!(
+        fs::read(source.join("state/preferences.json")).unwrap(),
+        original
+    );
+    let restored = migration::resume_migration(&record).unwrap();
+    assert_eq!(restored.root, source);
+    assert_eq!(
+        storage::load_state(&source).unwrap().preferences.font_size,
+        26
+    );
+    assert_eq!(
+        fs::read_to_string(temp.path().join("original.md")).unwrap(),
+        "原文不动"
+    );
+}
+
+// 新根归属被替换时不得提交或误删；回滚后的陌生残留也不能被清理。
+#[test]
+fn changed_target_owner_blocks_health_and_cleanup_but_preserves_source() {
+    let (temp, source, record) = setup();
+    let target = temp.path().join("target");
+    migration::prepare_migration(&record, &target, vec![]).unwrap();
+    migration::resume_migration(&record).unwrap();
+    let mut owner = storage::read_owner(&target).unwrap();
+    owner.instance_id = uuid::Uuid::new_v4();
+    storage::atomic_json(&target.join("owner.json"), &owner).unwrap();
+    assert!(migration::commit_health(&record).is_err());
+    let restored = migration::resume_migration(&record).unwrap();
+    assert_eq!(restored.root, source);
+    assert!(migration::retry_cleanup(&record).is_err());
+    assert!(target.exists());
+    assert_eq!(
+        storage::load_state(&source).unwrap().preferences.font_size,
+        26
+    );
+    assert_eq!(
+        fs::read_to_string(temp.path().join("original.md")).unwrap(),
+        "原文不动"
+    );
+}

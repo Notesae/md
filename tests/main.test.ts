@@ -127,6 +127,95 @@ describe("最近目录与关闭导航", () => {
 
 afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 
+describe("迁移健康确认", () => {
+  it("原生打开失败时不以空界面代替恢复成功", async () => {
+    vi.resetModules(); native.invoke.mockClear(); document.body.innerHTML = '<div id="app"></div>';
+    const original = native.invoke.getMockImplementation()!;
+    native.invoke.mockImplementation((name: string) => name === "open_document" ? Promise.reject(new Error("文章不可用")) : original(name));
+    await import("../src/main"); await settle();
+    expect(document.querySelector("#notice-text")!.textContent).toContain("文章不可用");
+    expect(native.invoke.mock.calls.filter(([name]) => name === "app_ready")).toHaveLength(0);
+  });
+
+  it("会话刷新失败后返回阅读也不能确认健康", async () => {
+    vi.resetModules(); native.invoke.mockClear(); document.body.innerHTML = '<div id="app"></div>';
+    const rendering = deferred<void>(); let reads = 0;
+    const original = native.invoke.getMockImplementation()!;
+    native.invoke.mockImplementation((name: string) => name === "get_session" && ++reads > 1 ? Promise.reject(new Error("会话读取失败")) : original(name));
+    native.show.mockReturnValueOnce(rendering.promise);
+    await import("../src/main"); await settle(); clickSettings(); await settle();
+    rendering.resolve(); await settle(); clickSettings(); await settle();
+    expect(native.invoke.mock.calls.filter(([name]) => name === "app_ready")).toHaveLength(0);
+  });
+
+  it("健康确认写入失败不锁死重试，下一次成功定位可再次提交", async () => {
+    vi.resetModules(); native.invoke.mockClear(); document.body.innerHTML = '<div id="app"></div>';
+    const original = native.invoke.getMockImplementation()!; let attempts = 0;
+    native.invoke.mockImplementation((name: string) => name === "app_ready" && ++attempts === 1 ? Promise.reject(new Error("引导不可写")) : original(name));
+    await import("../src/main"); await settle();
+    expect(document.querySelector("#notice-text")!.textContent).toContain("健康确认失败");
+    clickSettings(); await settle(); clickSettings(); await settle();
+    expect(native.invoke.mock.calls.filter(([name]) => name === "app_ready")).toHaveLength(2);
+  });
+
+  it("旧定位完成不能替代返回阅读后的新定位，最新定位完成前保留迁移源", async () => {
+    vi.resetModules(); native.invoke.mockClear(); document.body.innerHTML = '<div id="app"></div>';
+    const first = deferred<void>(); const latest = deferred<void>();
+    native.restore.mockReturnValueOnce(first.promise).mockReturnValueOnce(latest.promise);
+    await import("../src/main"); await settle();
+    clickSettings(); await settle(); clickSettings(); await settle();
+    first.resolve(); await settle();
+    expect(native.invoke.mock.calls.filter(([name]) => name === "app_ready")).toHaveLength(0);
+    latest.resolve(); await settle();
+    expect(native.invoke.mock.calls.filter(([name]) => name === "app_ready")).toHaveLength(1);
+  });
+
+  it("返回阅读的定位先完成时，仍须等待本次会话刷新成功才能确认健康", async () => {
+    vi.resetModules(); native.invoke.mockClear(); document.body.innerHTML = '<div id="app"></div>';
+    const rendering = deferred<void>(); const session = deferred<Session>(); let reads = 0;
+    const original = native.invoke.getMockImplementation()!;
+    native.invoke.mockImplementation((name: string) => name === "get_session" && ++reads > 1 ? session.promise : original(name));
+    native.show.mockReturnValueOnce(rendering.promise);
+    await import("../src/main"); await settle(); clickSettings(); await settle();
+    rendering.resolve(); await settle(); clickSettings(); await settle();
+    expect(native.invoke.mock.calls.filter(([name]) => name === "app_ready")).toHaveLength(0);
+    session.resolve(structuredClone(remoteSession)); await settle();
+    expect(native.invoke.mock.calls.filter(([name]) => name === "app_ready")).toHaveLength(1);
+  });
+
+  it("首屏已绘制但位置尚未恢复时不提交健康，恢复完成后才确认一次", async () => {
+    vi.resetModules(); native.invoke.mockClear(); native.show.mockClear();
+    document.body.innerHTML = '<div id="app"></div>';
+    const restoring = deferred<void>(); native.restore.mockReturnValueOnce(restoring.promise);
+    await import("../src/main"); await settle();
+    expect(native.show).toHaveBeenCalledTimes(1);
+    expect(native.invoke.mock.calls.filter(([name]) => name === "app_ready")).toHaveLength(0);
+    restoring.resolve(); await settle();
+    expect(native.invoke.mock.calls.filter(([name]) => name === "app_ready")).toHaveLength(1);
+  });
+
+  it("阅读状态恢复失败时不确认新位置，保留源目录供下次启动回滚", async () => {
+    vi.resetModules(); native.invoke.mockClear(); document.body.innerHTML = '<div id="app"></div>';
+    native.restore.mockRejectedValueOnce(new Error("恢复位置失败"));
+    await import("../src/main"); await settle();
+    expect(document.querySelector("#notice-text")!.textContent).toContain("恢复位置失败");
+    expect(native.invoke.mock.calls.filter(([name]) => name === "app_ready")).toHaveLength(0);
+  });
+
+  it("首屏后进入设置会推迟确认，返回阅读并恢复锚点后才允许清理源目录", async () => {
+    vi.resetModules(); native.invoke.mockClear(); document.body.innerHTML = '<div id="app"></div>';
+    const rendering = deferred<void>(); native.show.mockReturnValueOnce(rendering.promise);
+    await import("../src/main"); await settle(); clickSettings(); await settle();
+    rendering.resolve(); await settle();
+    expect(native.invoke.mock.calls.filter(([name]) => name === "app_ready")).toHaveLength(0);
+    const restoring = deferred<void>(); native.restore.mockReturnValueOnce(restoring.promise);
+    clickSettings(); await settle();
+    expect(native.invoke.mock.calls.filter(([name]) => name === "app_ready")).toHaveLength(0);
+    restoring.resolve(); await settle();
+    expect(native.invoke.mock.calls.filter(([name]) => name === "app_ready")).toHaveLength(1);
+  });
+});
+
 describe("文件刷新与设置页交错", () => {
   it("刷新 IPC 已发出后进入设置，迟到结果不能关闭设置或替换正文", async () => {
     const pending = deferred<ReaderDocument>();
