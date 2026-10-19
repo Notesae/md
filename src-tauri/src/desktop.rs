@@ -537,6 +537,7 @@ fn bootstrap() -> Result<Option<Runtime>, String> {
             format_version: 1,
             root: root.clone(),
             instance_id: owner.instance_id,
+            ..Default::default()
         },
     )?;
     Ok(Some(Runtime::new(root, state, lock)))

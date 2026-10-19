@@ -49,3 +49,64 @@ fn rejects_network_paths_and_volume_roots() {
     #[cfg(windows)]
     assert!(validate_local_path(std::path::Path::new(r"F:\")).is_err());
 }
+
+// 其他软件的归属标记不能触发本应用的目录接管或清理。
+#[test]
+fn refuses_foreign_owner_and_parent_components() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::write(temp.path().join("owner.json"), serde_json::json!({ "format_version": 1, "instance_id": uuid::Uuid::new_v4(), "app_id": "another.application" }).to_string()).unwrap();
+    assert!(initialize_root(temp.path()).is_err());
+    assert!(validate_local_path(&temp.path().join("nested/../escape")).is_err());
+}
+
+// 两份受限引导记录支持损坏恢复，重复保存不积累随机暂存文件。
+#[test]
+fn bootstrap_recovers_without_unbounded_temp_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path().join("data");
+    let owner = initialize_root(&data).unwrap();
+    let path = temp.path().join("bootstrap.json");
+    let record = md_reader::storage::Bootstrap {
+        format_version: 1,
+        root: data.clone(),
+        instance_id: owner.instance_id,
+        ..Default::default()
+    };
+    for _ in 0..5 {
+        md_reader::storage::save_bootstrap(&path, &record).unwrap();
+    }
+    fs::write(&path, "broken").unwrap();
+    assert_eq!(
+        md_reader::storage::load_bootstrap(&path).unwrap().root,
+        data
+    );
+    assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 3);
+}
+
+// Windows junction 不得使缓存清理走到文章目录，即使根目录标记有效。
+#[cfg(windows)]
+#[test]
+fn refuses_junction_before_cache_cleanup() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("data");
+    let original = temp.path().join("articles");
+    fs::create_dir(&original).unwrap();
+    fs::write(original.join("note.md"), "保留").unwrap();
+    initialize_root(&root).unwrap();
+    let output = std::process::Command::new("cmd.exe")
+        .args(["/d", "/c", "mklink", "/J"])
+        .arg(root.join("cache").join("unsafe"))
+        .arg(&original)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(md_reader::storage::clear_managed_child(&root, "cache").is_err());
+    assert_eq!(
+        fs::read_to_string(original.join("note.md")).unwrap(),
+        "保留"
+    );
+}

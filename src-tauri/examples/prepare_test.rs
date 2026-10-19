@@ -23,6 +23,7 @@ fn main() -> Result<(), String> {
             format_version: 1,
             root: root.clone(),
             instance_id: owner.instance_id,
+            ..Default::default()
         },
     )?;
     println!(

@@ -1,4 +1,5 @@
 pub mod document;
+pub mod migration;
 pub mod storage;
 
 #[cfg(feature = "desktop")]
