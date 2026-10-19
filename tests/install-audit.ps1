@@ -16,6 +16,26 @@ function Assert-SafeRoot([string]$Path) {
   return $full
 }
 
+# NSIS 卸载器会先退出启动进程，文件删除发生在随后的副本里，不能只等第一个进程。
+function Wait-Uninstall([string]$File, [string]$Arguments, [string]$Executable) {
+  $info = New-Object System.Diagnostics.ProcessStartInfo
+  $info.FileName = $File
+  $info.Arguments = $Arguments
+  $info.UseShellExecute = $false
+  $info.CreateNoWindow = $true
+  [void][System.Diagnostics.Process]::Start($info)
+  $deadline = [DateTime]::UtcNow.AddMinutes(3)
+  $stableSince = $null
+  while ([DateTime]::UtcNow -lt $deadline) {
+    if (-not (Test-Path -LiteralPath $Executable)) {
+      if (-not $stableSince) { $stableSince = [DateTime]::UtcNow }
+      elseif (([DateTime]::UtcNow - $stableSince).TotalMilliseconds -ge 800) { return }
+    } else { $stableSince = $null }
+    Start-Sleep -Milliseconds 200
+  }
+  throw "卸载未完成，程序仍在：$Executable"
+}
+
 function Invoke-Quiet([string]$File, [string]$Arguments) {
   $info = New-Object System.Diagnostics.ProcessStartInfo
   $info.FileName = $File
@@ -157,7 +177,7 @@ try {
   $report.paths += '安装完成，三个扩展名关联到当前用户安装目录，安装阶段没有创建 MdReader 数据'
 
   $boot = Initialize-AuditData $env:LOCALAPPDATA $dataRoot $original
-  Invoke-Quiet (Join-Path $installDir 'uninstall.exe') '/S'
+  Wait-Uninstall (Join-Path $installDir 'uninstall.exe') '/S' $exe
   if (Test-Path -LiteralPath $exe) { throw '保留数据的卸载后程序仍在' }
   if (-not (Test-Path -LiteralPath $dataRoot)) { throw '保留数据的卸载删除了数据根' }
   if (-not (Test-Path -LiteralPath $original)) { throw '卸载删除了原始文章' }
@@ -168,7 +188,7 @@ try {
 
   Invoke-Quiet $Installer "/S /NS /D=$installDir"
   Assert-Associated $exe
-  Invoke-Quiet (Join-Path $installDir 'uninstall.exe') '/S /DELETEAPPDATA'
+  Wait-Uninstall (Join-Path $installDir 'uninstall.exe') '/S /DELETEAPPDATA' $exe
   if (Test-Path -LiteralPath $dataRoot) { throw '勾选清理后数据根仍在' }
   if (Test-Path -LiteralPath (Join-Path $env:LOCALAPPDATA 'MdReader\bootstrap.json')) { throw '勾选清理后引导记录仍在' }
   if (-not (Test-Path -LiteralPath $original)) { throw '清理数据时删除了原始文章' }
@@ -176,7 +196,7 @@ try {
 
   Invoke-Quiet $Installer "/S /NS /D=$installDir"
   Initialize-AuditData $env:LOCALAPPDATA $dataRoot $original | Out-Null
-  Invoke-Quiet (Join-Path $installDir 'uninstall.exe') '/S /UPDATE /DELETEAPPDATA'
+  Wait-Uninstall (Join-Path $installDir 'uninstall.exe') '/S /UPDATE /DELETEAPPDATA' $exe
   if (-not (Test-Path -LiteralPath $dataRoot)) { throw '升级卸载删除了数据根' }
   if (-not (Test-Path -LiteralPath (Join-Path $env:LOCALAPPDATA 'MdReader\bootstrap.json'))) { throw '升级卸载删除了引导记录' }
   if (-not (Test-Path -LiteralPath $original)) { throw '升级卸载删除了原始文章' }
