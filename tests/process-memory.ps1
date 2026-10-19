@@ -1,4 +1,4 @@
-param([Parameter(Mandatory = $true)][string]$ExecutablePath)
+﻿param([Parameter(Mandatory = $true)][string]$ExecutablePath)
 $ErrorActionPreference = 'Stop'
 # 使用系统的私有工作集字段，不能用进程私有提交量或工作集总量代替。
 Add-Type -TypeDefinition @'
