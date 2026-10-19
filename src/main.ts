@@ -351,11 +351,14 @@ function toggleSearch(show: boolean): void {
 
 /** 关闭成功才清理阅读界面；旧关闭不能覆盖此后发起的新打开请求。 */
 function closeDocument(): Promise<void> {
-  if (!current || closingDocument) return closingDocument ?? Promise.resolve();
+  if (!current) return closingDocument ?? Promise.resolve();
+  const pending = closingDocument;
   const ticket = ++request;
   healthySessionRequest = 0; positionEpoch++;
   clearTimeout(refreshTimer);
-  closingDocument = (async () => {
+  const closing: Promise<void> = (async () => {
+    // 重复关闭仍是新的用户意图；串行完成原生关闭，并取消中间排队的打开请求。
+    await pending?.catch(() => {});
     await persistPosition();
     if (ticket !== request) return;
     await invoke("close_document");
@@ -377,8 +380,9 @@ function closeDocument(): Promise<void> {
     document.querySelector("#read-progress")!.textContent = "—"; document.querySelector<HTMLElement>("#progress-fill")!.style.width = "0";
     if (isTauri()) void getCurrentWindow().setTitle("MD · Markdown 阅读器");
     renderOutline(); renderRecent(); pane.scrollTop = 0; pane.focus({ preventScroll: true });
-  })().finally(() => { closingDocument = null; });
-  return closingDocument;
+  })().finally(() => { if (closingDocument === closing) closingDocument = null; });
+  closingDocument = closing;
+  return closing;
 }
 
 /** 工具栏和空状态共用动作，所有打开入口都走同一个授权及请求处理流程。 */

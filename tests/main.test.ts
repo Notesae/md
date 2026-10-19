@@ -93,6 +93,30 @@ describe("关闭文章的页面与请求边界", () => {
     expect(opens()).toHaveLength(2); expect(native.dispose).not.toHaveBeenCalled();
   });
 
+  it("关闭等待中打开后又关闭，最后一次关闭取消排队打开并回到欢迎页", async () => {
+    const closing = deferred<void>(); const original = native.invoke.getMockImplementation()!;
+    native.invoke.mockImplementation((name: string) => name === "close_document" ? closing.promise : original(name));
+    close(); await settle();
+    native.handlers.get("open-path")!({ payload: path }); await settle(); close(); await settle();
+    closing.resolve(); await settle();
+    expect(opens()).toHaveLength(1);
+    expect(document.querySelector<HTMLElement>("#welcome")!.hidden).toBe(false);
+    expect(document.querySelector("#article")!.textContent).toBe("");
+  });
+
+  it("旧关闭结束不能释放新关闭的等待边界，后续打开等待最新关闭完成", async () => {
+    const first = deferred<void>(); const second = deferred<void>(); let closes = 0;
+    const original = native.invoke.getMockImplementation()!; const next = "H:\\文章\\最后一篇.md";
+    native.invoke.mockImplementation((name: string, payload?: { path: string }) => name === "close_document" ? (++closes === 1 ? first.promise : second.promise)
+      : name === "open_document" ? Promise.resolve({ ...article(2), path: payload!.path }) : original(name));
+    close(); await settle(); native.handlers.get("open-path")!({ payload: path }); await settle(); close(); await settle();
+    first.resolve(); await settle(); expect(closes).toBe(2);
+    native.handlers.get("open-path")!({ payload: next }); await settle(); expect(opens()).toHaveLength(1);
+    second.resolve(); await settle();
+    expect(opens()).toHaveLength(2); expect(document.querySelector("#document-name")!.textContent).toBe("最后一篇.md");
+    expect(document.querySelector<HTMLElement>("#article")!.hidden).toBe(false);
+  });
+
   it("关闭后迟到的打开结果不能恢复旧文章", async () => {
     const opening = deferred<ReaderDocument>(); const original = native.invoke.getMockImplementation()!;
     native.invoke.mockImplementation((name: string) => name === "open_document" ? opening.promise : original(name));
