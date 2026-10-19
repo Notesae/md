@@ -1,9 +1,11 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import type { DirectoryEntry, Preferences, ReaderDocument, Session } from "./types";
+import type { DirectoryEntry, Preferences, ReaderDocument, ReadingPosition, Session } from "./types";
 import { Reader } from "./reader";
 import { icon } from "./icons";
+import type { StorageSettings } from "./storage-settings";
+import { PreferenceStore } from "./preferences";
 import "./styles.css";
 
 // 主窗口复用阅读视图和设置页，所有文件名称与路径用文本节点呈现。
@@ -54,12 +56,26 @@ let request = 0;
 let session: Session;
 let current: ReaderDocument | null = null;
 let settingsOpen = false;
+// 设置页隐藏正文时保留原锚点，文件变化延迟到返回阅读后处理。
+let settingsPosition: ReadingPosition | undefined;
+let refreshOnReturn = false;
 let positionTimer = 0;
 let searchTimer = 0;
-let preferencesTimer = 0;
 let refreshTimer = 0;
 let scrollFrame = 0;
 let noticeTimer = 0;
+// 偏好写入串行，快速切换主题或字号时旧请求不能最后覆盖新设置。
+let preferences: PreferenceStore;
+let storageView: StorageSettings | null = null;
+let readinessSent = false;
+
+/** 首屏出现后确认新数据位置健康，未确认前后台始终保留迁移源。 */
+async function confirmReady(): Promise<void> {
+  if (readinessSent) return;
+  readinessSent = true;
+  try { const notice = await invoke<string | null>("app_ready"); if (notice) message(notice, true); }
+  catch (error) { message(`启动健康确认失败：${String(error)}`, true); }
+}
 
 function message(text: string, persistent = false): void {
   document.querySelector("#notice-text")!.textContent = text;
@@ -74,7 +90,7 @@ const sizeLabel = (bytes: number) => bytes < 1_000_000 ? `${(bytes / 1000).toFix
 
 /** 同时更新正文、主题和侧栏，不重新渲染文章。 */
 function applyPreferences(): void {
-  const p = session.state.preferences;
+  const p = preferences.snapshot;
   const dark = p.theme === "dark" || (p.theme === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
   document.documentElement.dataset.theme = dark ? "dark" : "light";
   document.documentElement.style.setProperty("--body-size", `${p.fontSize}px`);
@@ -92,10 +108,11 @@ function applyPreferences(): void {
 
 /** 合并滑块写入；失败提示持久化状态，不能伪装保存成功。 */
 function changePreferences(patch: Partial<Preferences>): void {
-  Object.assign(session.state.preferences, patch); applyPreferences(); clearTimeout(preferencesTimer);
-  preferencesTimer = window.setTimeout(() => {
-    void invoke("save_preferences", { preferences: session.state.preferences }).catch((error) => message(`设置未保存：${String(error)}`, true));
-  }, 180);
+  preferences.update(patch); applyPreferences();
+}
+
+async function refreshSession(): Promise<void> {
+  session = await invoke<Session>("get_session");
 }
 
 /** 最近列表最多展示有限条，用户可以显式查看其余有界历史。 */
@@ -153,13 +170,16 @@ function position(): number { return Math.max(0, Math.min(1, pane.scrollTop / Ma
 
 async function persistPosition(): Promise<void> {
   if (!current || settingsOpen) return;
-  const path = current.path; const progress = position();
-  const item = session.state.recent.find((item) => item.path === path); if (item) item.position = progress;
-  await invoke("save_position", { path, position: progress });
+  const path = current.path; const progress = reader.capturePosition();
+  const item = session.state.recent.find((item) => item.path === path);
+  if (!item || (item.position === progress.position && item.block === progress.block && item.offset === progress.offset)) return;
+  await invoke("save_position", { path, ...progress });
+  const latest = session.state.recent.find((item) => item.path === path); if (latest) Object.assign(latest, progress);
 }
 
 /** 旧请求不能覆盖新文章；首屏、全文展示与读盘解析分别可观测。 */
-async function openPath(path: string, restore?: number): Promise<void> {
+async function openPath(path: string, restore?: ReadingPosition): Promise<void> {
+  refreshOnReturn = false;
   const ticket = ++request; const start = performance.now();
   try {
     await persistPosition().catch((error) => message(`阅读进度未保存：${String(error)}`, true));
@@ -167,8 +187,8 @@ async function openPath(path: string, restore?: number): Promise<void> {
     document.querySelector("#document-status")!.textContent = "正在打开…"; app.classList.add("opening");
     const result = await invoke<ReaderDocument>("open_document", { path });
     if (ticket !== request) return;
-    const saved = restore ?? session.state.recent.find((item) => item.path === result.path)?.position ?? 0;
-    current = result; if (settingsOpen) toggleSettings();
+    const saved = restore ?? session.state.recent.find((item) => item.path === result.path) ?? { position: 0, block: null, offset: 0, anchorHash: null };
+    current = result; if (settingsOpen) toggleSettings(false);
     document.querySelector<HTMLElement>("#welcome")!.hidden = true; reader.article.hidden = false;
     document.querySelector<HTMLElement>("#close-document")!.hidden = false;
     document.querySelector("#document-name")!.textContent = filename(result.path);
@@ -179,11 +199,13 @@ async function openPath(path: string, restore?: number): Promise<void> {
     await reader.show(result, () => {
       if (ticket !== request) return;
       app.classList.remove("opening"); document.querySelector("#document-status")!.textContent = `${sizeLabel(result.bytes)} · 首屏 ${(performance.now() - start).toFixed(0)} ms`;
+      void confirmReady();
     });
     if (ticket !== request) return;
-    document.querySelector<HTMLElement>("#document-end")!.hidden = false; pane.scrollTop = saved * (pane.scrollHeight - pane.clientHeight);
-    session = await invoke<Session>("get_session"); if (ticket !== request) return;
+    document.querySelector<HTMLElement>("#document-end")!.hidden = false; await reader.restorePosition(saved);
+    await refreshSession(); if (ticket !== request) return;
     renderRecent(); updateProgress();
+    if (result.cacheError) message(`应用缓存未写入，正文仍可阅读：${result.cacheError}`, true);
     if (!document.querySelector<HTMLElement>("#search-bar")!.hidden) reader.search(document.querySelector<HTMLInputElement>("#search-input")!.value);
   } catch (error) {
     if (ticket === request) { message(`无法打开文章：${String(error)}`, true); document.querySelector("#document-status")!.textContent = "打开失败，可重新选择文件"; }
@@ -195,15 +217,27 @@ function updateProgress(): void {
   if (!current || settingsOpen) return;
   const percent = Math.round(position() * 100); document.querySelector("#read-progress")!.textContent = `${percent}%`;
   document.querySelector<HTMLElement>("#progress-fill")!.style.width = `${percent}%`;
+  reader.capturePosition();
 }
 
-function toggleSettings(): void {
+function toggleSettings(refresh = true): void {
+  if (!settingsOpen) settingsPosition = current ? reader.capturePosition() : undefined;
   settingsOpen = !settingsOpen; app.classList.toggle("settings-open", settingsOpen);
   document.querySelector<HTMLElement>("#settings")!.hidden = !settingsOpen; reader.article.hidden = settingsOpen || !current;
   document.querySelector<HTMLElement>("#welcome")!.hidden = settingsOpen || !!current;
   document.querySelector<HTMLElement>("#document-end")!.hidden = settingsOpen || !current;
-  if (settingsOpen) { pane.scrollTop = 0; document.querySelector<HTMLElement>("#settings-title")!.focus(); }
-  else { const saved = session.state.recent.find((item) => item.path === current?.path)?.position ?? 0; pane.scrollTop = saved * (pane.scrollHeight - pane.clientHeight); }
+  if (settingsOpen) {
+    pane.scrollTop = 0; document.querySelector<HTMLElement>("#settings-title")!.focus();
+    void import("./storage-settings").then(({ StorageSettings }) => {
+      storageView ??= new StorageSettings(document.querySelector<HTMLElement>("#storage-controls")!, () => preferences.snapshot, changePreferences, () => preferences.flush(), message);
+      if (settingsOpen) void storageView.activate();
+    }).catch((error) => message(`无法打开存储设置：${String(error)}`, true));
+  } else {
+    storageView?.deactivate();
+    const saved = settingsPosition; settingsPosition = undefined;
+    if (refresh && refreshOnReturn && current) { refreshOnReturn = false; void openPath(current.path, saved); }
+    else if (refresh && saved) void reader.restorePosition(saved);
+  }
 }
 
 function toggleSearch(show: boolean): void {
@@ -217,18 +251,23 @@ function toggleSearch(show: boolean): void {
 async function action(name: string): Promise<void> {
   try {
     if (name === "open") { const path = await invoke<string | null>("pick_file"); if (path) await openPath(path); }
-    else if (name === "folder") { const path = await invoke<string | null>("pick_directory"); if (path) { session = await invoke<Session>("get_session"); await renderDirectory(path, document.querySelector<HTMLElement>("#file-tree")!); changePreferences({ sidebar: true }); } }
+    else if (name === "folder") { const path = await invoke<string | null>("pick_directory"); if (path) { await refreshSession(); await renderDirectory(path, document.querySelector<HTMLElement>("#file-tree")!); changePreferences({ sidebar: true }); } }
     else if (name === "search") toggleSearch(true);
     else if (name === "close-search") toggleSearch(false);
     else if (name === "previous-match") reader.jumpMatch(-1);
     else if (name === "next-match") reader.jumpMatch(1);
-    else if (name === "sidebar") changePreferences({ sidebar: !session.state.preferences.sidebar });
-    else if (name === "outline") changePreferences({ outline: !session.state.preferences.outline });
+    else if (name === "sidebar") changePreferences({ sidebar: !preferences.snapshot.sidebar });
+    else if (name === "outline") {
+      if (matchMedia("(max-width: 950px)").matches) {
+        const visible = app.classList.toggle("outline-drawer");
+        document.querySelector('[data-action="outline"]')!.setAttribute("aria-pressed", String(visible));
+      } else changePreferences({ outline: !preferences.snapshot.outline });
+    }
     else if (name === "theme") changePreferences({ theme: document.documentElement.dataset.theme === "dark" ? "light" : "dark" });
     else if (name === "settings") { if (!settingsOpen) await persistPosition(); toggleSettings(); }
     else if (name === "top") pane.scrollTo({ top: 0 });
     else if (name === "dismiss-notice") document.querySelector<HTMLElement>("#notice")!.hidden = true;
-    else if (name === "clear-history") { await invoke("clear_history"); session = await invoke<Session>("get_session"); renderRecent(); message("最近记录已清除，原始文章与偏好已保留。"); }
+    else if (name === "clear-history") { await invoke("clear_history"); await refreshSession(); renderRecent(); message("最近记录已清除，原始文章与偏好已保留。"); }
     else if (name === "close-document") {
       await persistPosition(); request++; await invoke("close_document"); reader.dispose(); reader.article.replaceChildren(); current = null;
       reader.article.hidden = true; document.querySelector<HTMLElement>("#document-end")!.hidden = true;
@@ -252,15 +291,23 @@ document.querySelector("#theme-setting")!.addEventListener("change", (event) => 
 document.querySelector("#font-setting")!.addEventListener("input", (event) => changePreferences({ fontSize: Number((event.target as HTMLInputElement).value) }));
 document.querySelector("#width-setting")!.addEventListener("input", (event) => changePreferences({ contentWidth: Number((event.target as HTMLInputElement).value) }));
 pane.addEventListener("scroll", () => {
-  if (!scrollFrame) scrollFrame = requestAnimationFrame(() => { updateProgress(); scrollFrame = 0; });
+  // content-visibility 的块在首帧进入布局，下一帧再校准目录，避免高亮停在前一段。
+  if (!scrollFrame) scrollFrame = requestAnimationFrame(() => {
+    updateProgress(); scrollFrame = requestAnimationFrame(() => { updateProgress(); scrollFrame = 0; });
+  });
   clearTimeout(positionTimer); positionTimer = window.setTimeout(() => { void persistPosition().catch((error) => message(String(error), true)); }, 700);
 }, { passive: true });
+// 浏览器完成自动跳过块的布局后可能校正滚动锚点；在稳定位置同步目录。
+pane.addEventListener("scrollend", updateProgress);
+reader.article.addEventListener("contentvisibilityautostatechange", () => {
+  if (!scrollFrame) scrollFrame = requestAnimationFrame(() => { updateProgress(); scrollFrame = 0; });
+}, true);
 document.addEventListener("keydown", (event) => {
   if (event.ctrlKey && event.key.toLowerCase() === "o") { event.preventDefault(); void action(event.shiftKey ? "folder" : "open"); }
   if (event.ctrlKey && event.key.toLowerCase() === "f") { event.preventDefault(); toggleSearch(true); }
   if (event.ctrlKey && event.key.toLowerCase() === "w") { event.preventDefault(); void action("close-document"); }
-  if (event.key === "Escape") { if (settingsOpen) toggleSettings(); else toggleSearch(false); }
-  if (event.key === "F5" && current) { event.preventDefault(); void openPath(current.path, position()); }
+  if (event.key === "Escape") { app.classList.remove("outline-drawer"); if (settingsOpen) toggleSettings(); else toggleSearch(false); }
+  if (event.key === "F5" && current) { event.preventDefault(); if (settingsOpen) refreshOnReturn = true; else void openPath(current.path, reader.capturePosition()); }
 });
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { if (session) applyPreferences(); });
 reader.onMessage = message;
@@ -294,13 +341,28 @@ async function start(): Promise<void> {
     await listen<string>("state-error", (event) => message(`状态未保存：${event.payload}`, true));
     await listen<string>("document-changed", (event) => {
       if (event.payload !== current?.path) return;
-      clearTimeout(refreshTimer); refreshTimer = window.setTimeout(() => { if (current?.path === event.payload) void openPath(current.path, position()); }, 250);
+      clearTimeout(refreshTimer); refreshTimer = window.setTimeout(() => {
+        if (current?.path !== event.payload) return;
+        if (settingsOpen) refreshOnReturn = true;
+        else void openPath(current.path, reader.capturePosition());
+      }, 250);
     });
-    session = await invoke<Session>("get_session"); applyPreferences(); renderRecent();
+    session = await invoke<Session>("get_session");
+    preferences = new PreferenceStore(session.state.preferences, (preferences) => invoke<void>("save_preferences", { preferences }), (error) => message(`设置未保存：${String(error)}`, true));
+    // 拦截关闭并提交合并中的偏好和进度；成功后移除监听，让原生关闭保存窗口尺寸。
+    let closing = false;
+    const stopClose = await getCurrentWindow().onCloseRequested(async (event) => {
+      event.preventDefault(); if (closing) return; closing = true;
+      try { await preferences.flush(); await persistPosition(); stopClose(); await getCurrentWindow().close(); }
+      catch (error) { closing = false; message(`关闭前保存失败，请重试：${String(error)}`, true); }
+    });
+    applyPreferences(); renderRecent();
     document.querySelector("#data-root")!.textContent = displayPath(session.root);
     document.querySelector("#version")!.textContent = `MD ${session.version} · 本地 Markdown 阅读器`;
-    if (session.state.folders[0]) void renderDirectory(session.state.folders[0], document.querySelector<HTMLElement>("#file-tree")!);
     if (session.state.lastFile) await openPath(session.state.lastFile);
+    else { await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))); }
+    void confirmReady();
+    if (session.state.folders[0]) void renderDirectory(session.state.folders[0], document.querySelector<HTMLElement>("#file-tree")!);
   } catch (error) { message(`无法恢复会话：${String(error)}`, true); }
 }
 

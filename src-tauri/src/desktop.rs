@@ -1,5 +1,6 @@
 use crate::{
     document::{self, Document, Image},
+    migration,
     storage::{self, AppState, Bootstrap, Preferences, RecentFile},
 };
 use fs2::FileExt;
@@ -26,21 +27,20 @@ struct Runtime {
     folder_roots: Vec<PathBuf>,
     current: Option<Resources>,
     watcher: Option<notify::RecommendedWatcher>,
+    bootstrap_path: PathBuf,
+    storage_target: Option<PathBuf>,
+    maintenance: bool,
 }
 
 impl Runtime {
     /// 仅恢复此前经用户授权的路径；不可用文件保留历史，实际打开时报告原因。
-    fn new(root: PathBuf, state: AppState, lock: fs::File) -> Self {
+    fn new(root: PathBuf, state: AppState, lock: fs::File, bootstrap_path: PathBuf) -> Self {
         let allowed_files = state
             .recent
             .iter()
-            .filter_map(|item| fs::canonicalize(&item.path).ok())
+            .map(|item| PathBuf::from(&item.path))
             .collect();
-        let folder_roots = state
-            .folders
-            .iter()
-            .filter_map(|path| fs::canonicalize(path).ok())
-            .collect();
+        let folder_roots = state.folders.iter().map(PathBuf::from).collect();
         Self {
             root,
             state,
@@ -49,6 +49,9 @@ impl Runtime {
             folder_roots,
             current: None,
             watcher: None,
+            bootstrap_path,
+            storage_target: None,
+            maintenance: false,
         }
     }
 }
@@ -68,6 +71,9 @@ struct Resources {
 struct Tasks {
     generation: Arc<AtomicU64>,
     parser: Arc<tokio::sync::Semaphore>,
+    images: Arc<tokio::sync::Semaphore>,
+    storage_generation: Arc<AtomicU64>,
+    maintenance: Arc<Mutex<()>>,
 }
 
 /// 主窗口启动快照；必要状态直接来自 Rust，不依赖 WebView 本地存储。
@@ -77,16 +83,25 @@ struct Session {
     root: String,
     state: AppState,
     version: &'static str,
+    storage_notice: Option<String>,
 }
 
 #[tauri::command]
-fn get_session(runtime: tauri::State<'_, SharedRuntime>) -> Result<Session, String> {
-    let runtime = runtime.lock().map_err(|_| "应用状态不可用")?;
-    Ok(Session {
-        root: runtime.root.to_string_lossy().into_owned(),
-        state: runtime.state.clone(),
-        version: env!("CARGO_PKG_VERSION"),
+async fn get_session(runtime: tauri::State<'_, SharedRuntime>) -> Result<Session, String> {
+    let runtime = runtime.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let runtime = runtime.lock().map_err(|_| "应用状态不可用")?;
+        Ok(Session {
+            root: runtime.root.to_string_lossy().into_owned(),
+            state: runtime.state.clone(),
+            version: env!("CARGO_PKG_VERSION"),
+            storage_notice: storage::load_bootstrap(&runtime.bootstrap_path)
+                .ok()
+                .and_then(|record| record.notice),
+        })
     })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// 原生选择结果才会进入授权表，前端不能用任意路径读取其他文件。
@@ -102,11 +117,20 @@ async fn pick_file(runtime: tauri::State<'_, SharedRuntime>) -> Result<Option<St
     };
     let path = fs::canonicalize(file.path()).map_err(|e| e.to_string())?;
     let text = path.to_string_lossy().into_owned();
-    runtime
-        .lock()
-        .map_err(|_| "状态不可用")?
-        .allowed_files
-        .insert(path);
+    let mut runtime = runtime.lock().map_err(|_| "状态不可用")?;
+    if runtime.maintenance {
+        return Err("正在准备维护，请等待重新启动。".into());
+    }
+    if runtime.allowed_files.len() >= 2000 {
+        let recent: HashSet<PathBuf> = runtime
+            .state
+            .recent
+            .iter()
+            .map(|item| PathBuf::from(&item.path))
+            .collect();
+        runtime.allowed_files.retain(|path| recent.contains(path));
+    }
+    runtime.allowed_files.insert(path);
     Ok(Some(text))
 }
 
@@ -125,6 +149,9 @@ async fn pick_directory(
     let path = fs::canonicalize(folder.path()).map_err(|e| e.to_string())?;
     let text = path.to_string_lossy().into_owned();
     let mut runtime = runtime.lock().map_err(|_| "状态不可用")?;
+    if runtime.maintenance {
+        return Err("正在准备维护，请等待重新启动。".into());
+    }
     runtime.folder_roots.retain(|p| p != &path);
     runtime.folder_roots.insert(0, path);
     runtime.folder_roots.truncate(20);
@@ -202,6 +229,9 @@ async fn open_document(
     let path = fs::canonicalize(path).map_err(|e| format!("文件不可用：{e}"))?;
     {
         let runtime = runtime.lock().map_err(|_| "状态不可用")?;
+        if runtime.maintenance {
+            return Err("正在准备维护，请等待重新启动。".into());
+        }
         if !runtime.allowed_files.contains(&path)
             && !runtime
                 .folder_roots
@@ -219,33 +249,54 @@ async fn open_document(
         .acquire_owned()
         .await
         .map_err(|e| e.to_string())?;
+    let cache = {
+        let runtime = runtime.lock().map_err(|_| "状态不可用")?;
+        if runtime.maintenance {
+            return Err("正在准备维护，请等待重新启动。".into());
+        }
+        runtime.state.preferences.persistent_cache.then(|| {
+            (
+                runtime.root.clone(),
+                runtime.state.preferences.cache_mib as u64 * 1024 * 1024,
+            )
+        })
+    };
     let runtime = runtime.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let _permit = permit;
-        let document = document::read_document(&path, &request, revision)?;
+        let document = document::read_document(
+            &path,
+            &request,
+            revision,
+            cache
+                .as_ref()
+                .map(|(root, budget)| (root.as_path(), *budget)),
+        )?;
         if request.load(Ordering::SeqCst) != revision {
             return Err("打开请求已取消。".into());
         }
         let mut runtime = runtime.lock().map_err(|_| "状态不可用")?;
         let text = path.to_string_lossy().into_owned();
-        let position = runtime
+        let saved = runtime
             .state
             .recent
             .iter()
             .find(|item| item.path == text)
-            .map_or(0.0, |item| item.position);
+            .cloned();
         runtime.state.recent.retain(|item| item.path != text);
-        runtime.state.recent.insert(
-            0,
-            RecentFile {
-                path: text.clone(),
-                position,
-                opened_at: SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs(),
-            },
-        );
+        let mut recent = saved.unwrap_or(RecentFile {
+            path: text.clone(),
+            position: 0.0,
+            opened_at: 0,
+            block: None,
+            offset: 0.0,
+            anchor_hash: None,
+        });
+        recent.opened_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        runtime.state.recent.insert(0, recent);
         runtime.state.recent.truncate(1000);
         runtime.state.last_file = Some(text);
         if let Err(error) = storage::save_state(&runtime.root, &runtime.state) {
@@ -293,7 +344,14 @@ async fn read_image(
     revision: u64,
     index: usize,
     runtime: tauri::State<'_, SharedRuntime>,
+    tasks: tauri::State<'_, Tasks>,
 ) -> Result<tauri::ipc::Response, String> {
+    let permit = tasks
+        .images
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|e| e.to_string())?;
     let (directory, url) = {
         let runtime = runtime.lock().map_err(|_| "状态不可用")?;
         let current = runtime
@@ -311,6 +369,7 @@ async fn read_image(
         )
     };
     tauri::async_runtime::spawn_blocking(move || {
+        let _permit = permit;
         let path = document::resolve_local_image(&directory, &url)?;
         let mut file = fs::File::open(path).map_err(|e| e.to_string())?;
         use std::io::Read;
@@ -375,12 +434,31 @@ async fn follow_link(
 async fn save_preferences(
     preferences: Preferences,
     runtime: tauri::State<'_, SharedRuntime>,
+    tasks: tauri::State<'_, Tasks>,
 ) -> Result<(), String> {
+    let permit = tasks
+        .parser
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|e| e.to_string())?;
     let runtime = runtime.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let _permit = permit;
         let mut runtime = runtime.lock().map_err(|_| "状态不可用")?;
+        if runtime.maintenance {
+            return Err("正在准备维护，请等待重新启动。".into());
+        }
         let mut next = runtime.state.clone();
         next.preferences = preferences;
+        storage::enforce_cache_budget(
+            &runtime.root,
+            if next.preferences.persistent_cache {
+                next.preferences.cache_mib as u64 * 1024 * 1024
+            } else {
+                0
+            },
+        )?;
         storage::save_state(&runtime.root, &next)?;
         runtime.state = next;
         Ok(())
@@ -390,26 +468,43 @@ async fn save_preferences(
 }
 
 #[tauri::command]
+/// 校验有界定位元数据，落盘成功后才更新会话，失败仍可用原状态重试。
 async fn save_position(
     path: String,
     position: f64,
+    block: Option<usize>,
+    offset: Option<f64>,
+    anchor_hash: Option<String>,
     runtime: tauri::State<'_, SharedRuntime>,
 ) -> Result<(), String> {
     if !position.is_finite() || !(0.0..=1.0).contains(&position) {
         return Err("阅读进度无效。".into());
     }
+    let offset = offset.unwrap_or(0.0);
+    if !offset.is_finite()
+        || offset.abs() > 1_000_000_000.0
+        || anchor_hash
+            .as_ref()
+            .is_some_and(|hash| hash.len() != 16 || !hash.bytes().all(|b| b.is_ascii_hexdigit()))
+    {
+        return Err("阅读定位信息无效。".into());
+    }
     let runtime = runtime.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let mut runtime = runtime.lock().map_err(|_| "状态不可用")?;
-        if let Some(item) = runtime
-            .state
-            .recent
-            .iter_mut()
-            .find(|item| item.path == path)
-        {
-            item.position = position;
+        if runtime.maintenance {
+            return Err("正在准备维护，请等待重新启动。".into());
         }
-        storage::save_state(&runtime.root, &runtime.state)
+        let mut next = runtime.state.clone();
+        if let Some(item) = next.recent.iter_mut().find(|item| item.path == path) {
+            item.position = position;
+            item.block = block;
+            item.offset = offset;
+            item.anchor_hash = anchor_hash;
+        }
+        storage::save_state(&runtime.root, &next)?;
+        runtime.state = next;
+        Ok(())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -420,12 +515,281 @@ fn cancel_open(tasks: tauri::State<'_, Tasks>) {
     tasks.generation.fetch_add(1, Ordering::SeqCst);
 }
 
+/// 设置页所需的分类占用和迁移残留，均来自受管目录的实际扫描。
+#[derive(Serialize)]
+struct StorageInfo {
+    usage: storage::StorageUsage,
+    residual: Option<ResidualUsage>,
+    notice: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ResidualUsage {
+    path: String,
+    bytes: u64,
+}
+
+#[tauri::command]
+async fn get_storage_info(
+    runtime: tauri::State<'_, SharedRuntime>,
+    tasks: tauri::State<'_, Tasks>,
+) -> Result<StorageInfo, String> {
+    let (root, path) = {
+        let runtime = runtime.lock().map_err(|_| "状态不可用")?;
+        (runtime.root.clone(), runtime.bootstrap_path.clone())
+    };
+    let generation = tasks.storage_generation.clone();
+    let request = generation.fetch_add(1, Ordering::SeqCst) + 1;
+    tauri::async_runtime::spawn_blocking(move || {
+        let cancelled = || generation.load(Ordering::Relaxed) != request;
+        let usage = storage::storage_usage(&root, cancelled)?;
+        let record = storage::load_bootstrap(&path)?;
+        let residual = match record.pending_cleanup {
+            Some(residual) => Some(ResidualUsage {
+                bytes: if residual.path.try_exists().map_err(|e| e.to_string())? {
+                    storage::tree_bytes(&residual.path, &cancelled)?
+                } else {
+                    0
+                },
+                path: residual.path.to_string_lossy().into_owned(),
+            }),
+            None => None,
+        };
+        Ok(StorageInfo {
+            usage,
+            residual,
+            notice: record.notice,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn cancel_storage_stats(tasks: tauri::State<'_, Tasks>) {
+    tasks.storage_generation.fetch_add(1, Ordering::SeqCst);
+}
+
+#[tauri::command]
+async fn reveal_data_directory(runtime: tauri::State<'_, SharedRuntime>) -> Result<(), String> {
+    let root = runtime.lock().map_err(|_| "状态不可用")?.root.clone();
+    open::that_detached(root).map_err(|e| e.to_string())
+}
+
+/// 此命令只清应用缓存，和解析任务串行；WebView 清理使用另一个重启命令。
+#[tauri::command]
+async fn clear_cache(
+    runtime: tauri::State<'_, SharedRuntime>,
+    tasks: tauri::State<'_, Tasks>,
+) -> Result<(), String> {
+    let permit = tasks
+        .parser
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|e| e.to_string())?;
+    let runtime = runtime.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _permit = permit;
+        let runtime = runtime.lock().map_err(|_| "状态不可用")?;
+        if runtime.maintenance {
+            return Err("正在准备维护，请等待重新启动。".into());
+        }
+        storage::clear_managed_child(&runtime.root, "cache")
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 原生选择器授权目标，真正的路径/容量检查在确认提交时再次执行。
+#[tauri::command]
+async fn choose_storage_target(
+    runtime: tauri::State<'_, SharedRuntime>,
+) -> Result<Option<String>, String> {
+    let Some(selected) = rfd::AsyncFileDialog::new()
+        .set_title("选择数据新位置的父目录（将在其中建立 MdReader）")
+        .pick_folder()
+        .await
+    else {
+        return Ok(None);
+    };
+    let selected = selected.path();
+    let target = migration::normalized_path(&if selected.join("owner.json").exists() {
+        selected.to_owned()
+    } else {
+        selected.join("MdReader")
+    })?;
+    let mut runtime = runtime.lock().map_err(|_| "状态不可用")?;
+    if runtime.maintenance {
+        return Err("正在准备维护，请等待重新启动。".into());
+    }
+    runtime.storage_target = Some(target.clone());
+    Ok(Some(target.to_string_lossy().into_owned()))
+}
+
+#[tauri::command]
+fn cancel_storage_target(runtime: tauri::State<'_, SharedRuntime>) {
+    if let Ok(mut runtime) = runtime.lock() {
+        runtime.storage_target = None;
+    }
+}
+
+/// 保存最新状态、持久化意图后冻结写入并请求重启；本进程不复制或删除 WebView。
+#[tauri::command]
+async fn migrate_storage(
+    target: String,
+    app: tauri::AppHandle,
+    runtime: tauri::State<'_, SharedRuntime>,
+    tasks: tauri::State<'_, Tasks>,
+) -> Result<(), String> {
+    tasks.generation.fetch_add(1, Ordering::SeqCst);
+    let permit = tasks
+        .parser
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|e| e.to_string())?;
+    let runtime = runtime.inner().clone();
+    let maintenance = tasks.maintenance.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _permit = permit;
+        let _maintenance = maintenance.lock().map_err(|_| "维护锁不可用")?;
+        let mut runtime = runtime.lock().map_err(|_| "状态不可用")?;
+        if runtime.maintenance {
+            return Err("已经在准备维护。".into());
+        }
+        let selected = runtime
+            .storage_target
+            .as_ref()
+            .filter(|selected| selected.to_string_lossy() == target)
+            .ok_or("目标已改变或尚未选择，请重新选择迁移位置。")?
+            .clone();
+        storage::save_state(&runtime.root, &runtime.state)?;
+        migration::prepare_migration(
+            &runtime.bootstrap_path,
+            &selected,
+            migration::session_processes()?,
+        )?;
+        runtime.maintenance = true;
+        runtime.storage_target = None;
+        runtime.watcher = None;
+        app.request_restart();
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 只安排下一启动重建浏览器目录，禁止对当前活动会话直接递归删除。
+#[tauri::command]
+async fn reset_webview(
+    app: tauri::AppHandle,
+    runtime: tauri::State<'_, SharedRuntime>,
+    tasks: tauri::State<'_, Tasks>,
+) -> Result<(), String> {
+    tasks.generation.fetch_add(1, Ordering::SeqCst);
+    let permit = tasks
+        .parser
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|e| e.to_string())?;
+    let runtime = runtime.inner().clone();
+    let maintenance = tasks.maintenance.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _permit = permit;
+        let _maintenance = maintenance.lock().map_err(|_| "维护锁不可用")?;
+        let mut runtime = runtime.lock().map_err(|_| "状态不可用")?;
+        if runtime.maintenance {
+            return Err("已经在准备维护。".into());
+        }
+        let mut record = storage::load_bootstrap(&runtime.bootstrap_path)?;
+        if record.migration.is_some() {
+            return Err("请先完成数据迁移。".into());
+        }
+        storage::save_state(&runtime.root, &runtime.state)?;
+        record.reset_webview = Some(migration::session_processes()?);
+        record.notice = None;
+        storage::save_bootstrap(&runtime.bootstrap_path, &record)?;
+        runtime.maintenance = true;
+        runtime.watcher = None;
+        app.request_restart();
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 首屏与必要状态恢复后提交健康结果；旧目录清理在释放运行状态锁之后执行。
+#[tauri::command]
+async fn app_ready(
+    app: tauri::AppHandle,
+    runtime: tauri::State<'_, SharedRuntime>,
+    tasks: tauri::State<'_, Tasks>,
+) -> Result<Option<String>, String> {
+    let runtime = runtime.inner().clone();
+    let maintenance = tasks.maintenance.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _maintenance = maintenance.lock().map_err(|_| "维护锁不可用")?;
+        let (path, migrated) = {
+            let mut runtime = runtime.lock().map_err(|_| "状态不可用")?;
+            let path = runtime.bootstrap_path.clone();
+            let record = storage::load_bootstrap(&path)?;
+            let migrated = record.migration.is_some();
+            if migrated {
+                if let Err(error) = migration::commit_health(&path) {
+                    runtime.maintenance = true;
+                    runtime.watcher = None;
+                    migration::rollback(&path, &error)?;
+                    app.request_restart();
+                    return Err(error);
+                }
+            }
+            (path, migrated)
+        };
+        if migrated {
+            if let Err(error) = migration::retry_cleanup(&path) {
+                let mut record = storage::load_bootstrap(&path)?;
+                record.notice = Some(format!(
+                    "新位置已启用，旧目录残留可在设置中重试清理：{error}"
+                ));
+                storage::save_bootstrap(&path, &record)?;
+            }
+        }
+        Ok(storage::load_bootstrap(&path)?.notice)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn retry_storage_cleanup(
+    runtime: tauri::State<'_, SharedRuntime>,
+    tasks: tauri::State<'_, Tasks>,
+) -> Result<(), String> {
+    let path = runtime
+        .lock()
+        .map_err(|_| "状态不可用")?
+        .bootstrap_path
+        .clone();
+    let maintenance = tasks.maintenance.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _maintenance = maintenance.lock().map_err(|_| "维护锁不可用")?;
+        migration::retry_cleanup(&path).map(|_| ())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// 清除历史不删除原文或偏好，并移除上次打开入口。
 #[tauri::command]
 async fn clear_history(runtime: tauri::State<'_, SharedRuntime>) -> Result<(), String> {
     let runtime = runtime.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let mut runtime = runtime.lock().map_err(|_| "状态不可用")?;
+        if runtime.maintenance {
+            return Err("正在准备维护，请等待重新启动。".into());
+        }
         let mut next = runtime.state.clone();
         next.recent.clear();
         next.folders.clear();
@@ -448,6 +812,9 @@ async fn close_document(
     let runtime = runtime.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let mut runtime = runtime.lock().map_err(|_| "状态不可用")?;
+        if runtime.maintenance {
+            return Err("正在准备维护，请等待重新启动。".into());
+        }
         runtime.current = None;
         runtime.watcher = None;
         runtime.state.last_file = None;
@@ -492,18 +859,28 @@ fn bootstrap() -> Result<Option<Runtime>, String> {
     lock.try_lock_exclusive()
         .map_err(|_| "MD 已经运行，请先关闭其他实例。")?;
     let path = location.join("bootstrap.json");
-    if path.exists() {
+    if path.exists() || path.with_file_name("bootstrap.recovery.json").exists() {
         let restored = (|| -> Result<Runtime, String> {
-            let record: Bootstrap = storage::read_json(&path, 16 * 1024)?;
-            let owner = storage::read_owner(&record.root)?;
+            let record = migration::resume_migration(&path)?;
+            if record.force_recovery {
+                return Err("上次浏览器启动失败。可重新选择数据位置；选回原目录时可只重建浏览器数据并保留阅读状态。".into());
+            }
+            let owner = storage::initialize_root(&record.root)?;
             if record.format_version != 1 || owner.instance_id != record.instance_id {
                 return Err("启动记录与数据目录不匹配。".into());
             }
             let state = storage::load_state(&record.root)?;
+            for category in ["state", "webview"] {
+                drop(
+                    tempfile::NamedTempFile::new_in(record.root.join(category))
+                        .map_err(|e| format!("数据位置不可写，未回落到其他磁盘：{e}"))?,
+                );
+            }
             Ok(Runtime::new(
                 record.root,
                 state,
                 lock.try_clone().map_err(|e| e.to_string())?,
+                path.clone(),
             ))
         })();
         match restored {
@@ -531,16 +908,31 @@ fn bootstrap() -> Result<Option<Runtime>, String> {
     };
     let owner = storage::initialize_root(&root)?;
     let state = storage::load_state(&root)?;
-    storage::save_bootstrap(
-        &path,
-        &Bootstrap {
-            format_version: 1,
-            root: root.clone(),
-            instance_id: owner.instance_id,
-            ..Default::default()
-        },
-    )?;
-    Ok(Some(Runtime::new(root, state, lock)))
+    let previous = storage::load_bootstrap(&path)
+        .ok()
+        .filter(|record| record.instance_id == owner.instance_id && record.root == root);
+    if previous
+        .as_ref()
+        .is_some_and(|record| record.force_recovery)
+    {
+        let choice = rfd::MessageDialog::new().set_title("MD · 重建浏览器数据")
+            .set_description("只清理此 MD 数据目录的浏览器数据并重新创建阅读窗口。偏好、历史和原始文章保持原位。是否继续？")
+            .set_buttons(rfd::MessageButtons::YesNo).show();
+        if choice != rfd::MessageDialogResult::Yes {
+            return Ok(None);
+        }
+        migration::wait_for_sessions(&[], &root.join("webview"))?;
+        storage::clear_managed_child(&root, "webview")?;
+    }
+    let mut record = previous.unwrap_or(Bootstrap {
+        format_version: 1,
+        root: root.clone(),
+        instance_id: owner.instance_id,
+        ..Default::default()
+    });
+    record.force_recovery = false;
+    storage::save_bootstrap(&path, &record)?;
+    Ok(Some(Runtime::new(root, state, lock, path)))
 }
 
 /// 单实例插件先注册，随后完成存储引导，最后用用户目录创建唯一 WebView。
@@ -583,6 +975,7 @@ pub fn run() {
             let width = runtime.state.window.width.clamp(800, 3840) as f64;
             let height = runtime.state.window.height.clamp(580, 2160) as f64;
             let maximized = runtime.state.window.maximized;
+            let bootstrap_path = runtime.bootstrap_path.clone();
             for argument in std::env::args().skip(1) {
                 if let Ok(path) = fs::canonicalize(argument) {
                     if document::is_markdown(&path) {
@@ -596,21 +989,36 @@ pub fn run() {
             app.manage(Tasks {
                 generation: Arc::new(AtomicU64::new(0)),
                 parser: Arc::new(tokio::sync::Semaphore::new(1)),
+                images: Arc::new(tokio::sync::Semaphore::new(2)),
+                storage_generation: Arc::new(AtomicU64::new(0)),
+                maintenance: Arc::new(Mutex::new(())),
             });
-            WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
-                .title("MD · Markdown 阅读器")
-                .inner_size(width, height)
-                .min_inner_size(800.0, 580.0)
-                .maximized(maximized)
-                .on_navigation(|url| {
-                    (url.scheme() == "tauri" && url.host_str() == Some("localhost"))
-                        || (url.scheme() == "http"
-                            && (url.host_str() == Some("tauri.localhost")
-                                || (url.host_str() == Some("127.0.0.1")
-                                    && url.port() == Some(1420))))
-                })
-                .data_directory(data_directory)
-                .build()?;
+            let window =
+                WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+                    .title("MD · Markdown 阅读器")
+                    .inner_size(width, height)
+                    .min_inner_size(800.0, 580.0)
+                    .maximized(maximized)
+                    .on_navigation(|url| {
+                        (url.scheme() == "tauri" && url.host_str() == Some("localhost"))
+                            || (url.scheme() == "http"
+                                && (url.host_str() == Some("tauri.localhost")
+                                    || (url.host_str() == Some("127.0.0.1")
+                                        && url.port() == Some(1420))))
+                    })
+                    .data_directory(data_directory)
+                    .build();
+            if let Err(error) = window {
+                if let Ok(mut record) = storage::load_bootstrap(&bootstrap_path) {
+                    if record.migration.is_some() {
+                        let _ = migration::rollback(&bootstrap_path, &error.to_string());
+                    } else {
+                        record.force_recovery = true;
+                        let _ = storage::save_bootstrap(&bootstrap_path, &record);
+                    }
+                }
+                return Err(error.into());
+            }
             Ok(())
         })
         .on_webview_event(|webview, event| {
@@ -653,7 +1061,17 @@ pub fn run() {
             save_position,
             cancel_open,
             clear_history,
-            close_document
+            close_document,
+            get_storage_info,
+            cancel_storage_stats,
+            reveal_data_directory,
+            clear_cache,
+            choose_storage_target,
+            cancel_storage_target,
+            migrate_storage,
+            reset_webview,
+            app_ready,
+            retry_storage_cleanup
         ])
         .run(tauri::generate_context!());
     if let Err(error) = result {

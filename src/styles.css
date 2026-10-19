@@ -152,6 +152,23 @@ kbd { font: 10px "Segoe UI", sans-serif; opacity: .8; margin-left: 16px; border:
 .path-value { color: var(--accent); padding: 12px 14px; background: var(--panel); border-radius: 4px; overflow-wrap: anywhere; line-height: 1.8; }
 .version { font-size: 11px; color: var(--muted); padding-top: 16px; }
 .back-button { font-size: 11px; }
+/* 存储使用清晰的分类账呈现，维护操作才需要保护焦点的确认界面。 */
+.storage-actions { display: flex; gap: 10px; flex-wrap: wrap; margin: 16px 0; }
+.storage-heading { padding: 0; margin: 28px 0 2px; }
+.storage-heading h3, .migration-residual h3 { font-size: 13px; font-weight: 600; color: var(--ink); }
+.storage-usage { display: grid; grid-template-columns: 1fr auto; margin: 16px 0 26px; font-size: 12px; }
+.storage-usage dt, .storage-usage dd { margin: 0; padding: 9px 0; border-bottom: 1px solid var(--line); }
+.storage-usage dt { color: var(--muted); }
+.storage-usage dd { text-align: right; font-variant-numeric: tabular-nums; }
+.budget-setting { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); }
+.budget-setting input { width: 90px; min-width: 80px !important; }
+.migration-residual { padding-top: 12px; }
+dialog { max-width: min(520px, 90vw); padding: 28px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); box-shadow: 0 16px 60px #101e1730; }
+dialog::backdrop { background: #14251d65; }
+dialog h2 { font: 600 23px/1.5 "Palatino Linotype", "SimSun", serif; margin: 0 0 18px; }
+dialog p { font-size: 13px; line-height: 1.9; overflow-wrap: anywhere; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px; }
+#maintenance-status { color: var(--danger); }
 @media (max-width: 1150px) {
   .app-shell { grid-template-columns: 204px minmax(0, 1fr) 176px; }
   .brand { width: 164px; }
@@ -159,10 +176,12 @@ kbd { font: 10px "Segoe UI", sans-serif; opacity: .8; margin-left: 16px; border:
   .prose { padding-inline: 32px; }
   .no-sidebar .app-shell { grid-template-columns: 0 minmax(0, 1fr) 176px; }
   .no-outline .app-shell { grid-template-columns: 204px minmax(0, 1fr) 0; }
+  .no-sidebar.no-outline .app-shell { grid-template-columns: 0 minmax(0, 1fr) 0; }
 }
 @media (max-width: 950px) {
   .app-shell, .no-outline .app-shell { grid-template-columns: 194px minmax(0, 1fr) 0; }
   .outline { display: none; }
+  .outline-drawer .outline { display: flex; position: absolute; z-index: 5; top: 70px; bottom: 30px; right: 0; width: min(280px, 80vw); background: var(--paper); box-shadow: -8px 0 28px #14251d20; }
   .no-sidebar .app-shell, .no-sidebar.no-outline .app-shell { grid-template-columns: 0 minmax(0, 1fr) 0; }
   .brand { width: 70px; } .brand-name { display: none; }
   .toolbar { gap: 10px; }

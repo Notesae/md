@@ -83,6 +83,16 @@ fn bootstrap_recovers_without_unbounded_temp_files() {
     assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 3);
 }
 
+// 曾经保存过的必要状态丢失时必须报错，不能默默生成一份空历史。
+#[test]
+fn missing_saved_state_is_not_silently_reset() {
+    let temp = tempfile::tempdir().unwrap();
+    initialize_root(temp.path()).unwrap();
+    save_state(temp.path(), &AppState::default()).unwrap();
+    fs::remove_file(temp.path().join("state/preferences.json")).unwrap();
+    assert!(load_state(temp.path()).is_err());
+}
+
 // Windows junction 不得使缓存清理走到文章目录，即使根目录标记有效。
 #[cfg(windows)]
 #[test]

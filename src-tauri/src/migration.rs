@@ -447,7 +447,7 @@ pub fn retry_cleanup(path: &Path) -> Result<Bootstrap, String> {
 }
 
 /// 窗口呈现并恢复必要状态后才提交健康结果；先保存残留任务，再尝试清理旧目录。
-pub fn confirm_health(path: &Path) -> Result<Bootstrap, String> {
+pub fn commit_health(path: &Path) -> Result<Bootstrap, String> {
     let mut record = storage::load_bootstrap(path)?;
     let Some(migration) = record.migration.clone() else {
         return Ok(record);
@@ -466,6 +466,15 @@ pub fn confirm_health(path: &Path) -> Result<Bootstrap, String> {
         instance_id: migration.instance_id,
     });
     storage::save_bootstrap(path, &record)?;
+    Ok(record)
+}
+
+/// 离线调用组合健康提交与一次残留清理；桌面层可在提交后释放状态锁再清理。
+pub fn confirm_health(path: &Path) -> Result<Bootstrap, String> {
+    let mut record = commit_health(path)?;
+    if record.pending_cleanup.is_none() {
+        return Ok(record);
+    }
     match retry_cleanup(path) {
         Ok(cleaned) => Ok(cleaned),
         Err(error) => {

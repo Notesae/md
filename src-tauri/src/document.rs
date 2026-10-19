@@ -1,6 +1,7 @@
 use percent_encoding::percent_decode_str;
 use pulldown_cmark::{html, CowStr, Event, Options, Parser, Tag, TagEnd};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     fs,
     io::Read,
@@ -10,7 +11,7 @@ use std::{
 };
 
 /// 正文目录使用受控标识，忽略原始 HTML 及用户自定义事件属性。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Heading {
     pub id: String,
     pub title: String,
@@ -19,16 +20,18 @@ pub struct Heading {
 }
 
 /// 图片先作为惰性资源返回；远程地址默认不会转换成浏览器请求。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Image {
     pub url: String,
     pub remote: bool,
 }
 
 /// 全文解析的结果按合法顶层块传输，不按固定行数破坏跨块引用。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ParsedDocument {
     pub blocks: Vec<String>,
+    pub block_hashes: Vec<String>,
     pub headings: Vec<Heading>,
     pub images: Vec<Image>,
     pub links: Vec<String>,
@@ -44,6 +47,9 @@ pub struct Document {
     pub revision: u64,
     pub read_ms: f64,
     pub parse_ms: f64,
+    pub cache_ms: f64,
+    pub cache_hit: bool,
+    pub cache_error: Option<String>,
     #[serde(flatten)]
     pub content: ParsedDocument,
 }
@@ -70,7 +76,8 @@ pub fn parse_document(
         | Options::ENABLE_TASKLISTS
         | Options::ENABLE_MATH
         | Options::ENABLE_GFM;
-    let parser = Parser::new_ext(source.trim_start_matches('\u{feff}'), options);
+    let source = source.trim_start_matches('\u{feff}');
+    let parser = Parser::new_ext(source, options);
     let mut events = Vec::new();
     let mut headings: Vec<Heading> = Vec::new();
     let mut images = Vec::new();
@@ -79,13 +86,24 @@ pub fn parse_document(
     let mut block = 0;
     let mut started = false;
     let mut heading: Option<usize> = None;
-    for (index, event) in parser.enumerate() {
+    // 使用源块摘要定位阅读状态，不把文章片段复制进历史文件。
+    let mut block_hashes = Vec::new();
+    let mut span = 0..0;
+    for (index, (event, range)) in parser.into_offset_iter().enumerate() {
         if index % 256 == 0 && request.load(Ordering::Relaxed) != revision {
             return Err("打开请求已被更新的文档取代。".into());
         }
         if depth == 0 && started {
+            block_hashes.push(
+                format!("{:x}", Sha256::digest(&source.as_bytes()[span.clone()]))[..16].to_owned(),
+            );
             events.push(Event::Html(BOUNDARY.into()));
             block += 1;
+        }
+        if depth == 0 {
+            span = range.clone();
+        } else {
+            span.end = span.end.max(range.end);
         }
         started = true;
         match &event {
@@ -136,9 +154,14 @@ pub fn parse_document(
     if request.load(Ordering::Relaxed) != revision {
         return Err("打开请求已取消。".into());
     }
+    if started {
+        block_hashes
+            .push(format!("{:x}", Sha256::digest(&source.as_bytes()[span]))[..16].to_owned());
+    }
     let mut output = String::with_capacity(source.len());
     html::push_html(&mut output, events.into_iter());
     Ok(ParsedDocument {
+        block_hashes,
         blocks: output
             .split(BOUNDARY)
             .filter(|s| !s.is_empty())
@@ -157,7 +180,12 @@ pub fn is_markdown(path: &Path) -> bool {
 }
 
 /// 分块读盘可取消，正文只接受 UTF-8；128MiB 上限避免意外打开二进制或超大文件耗尽内存。
-pub fn read_document(path: &Path, request: &AtomicU64, revision: u64) -> Result<Document, String> {
+pub fn read_document(
+    path: &Path,
+    request: &AtomicU64,
+    revision: u64,
+    cache: Option<(&Path, u64)>,
+) -> Result<Document, String> {
     if !is_markdown(path) {
         return Err("请选择 .md、.markdown 或 .mdown 文件。".into());
     }
@@ -184,8 +212,50 @@ pub fn read_document(path: &Path, request: &AtomicU64, revision: u64) -> Result<
     }
     let source = String::from_utf8(data).map_err(|_| "文章不是有效 UTF-8，请先转换文件编码。")?;
     let read_ms = start.elapsed().as_secs_f64() * 1000.0;
+    let cache_start = Instant::now();
+    let cache = cache.filter(|(_, budget)| *budget > 0);
+    let key = cache.map(|_| {
+        format!(
+            "{:x}",
+            Sha256::new()
+                .chain_update(b"md-render-v2\0")
+                .chain_update(source.as_bytes())
+                .finalize()
+        )
+    });
+    let cached = cache.and_then(|(root, budget)| {
+        crate::storage::read_cache::<ParsedDocument>(root, key.as_ref().unwrap(), budget)
+    });
+    let cache_hit = cached.is_some();
+    let mut cache_ms = cache_start.elapsed().as_secs_f64() * 1000.0;
     let parse_start = Instant::now();
-    let content = parse_document(&source, request, revision)?;
+    let content = match cached {
+        Some(content) => content,
+        None => parse_document(&source, request, revision)?,
+    };
+    let parse_ms = if cache_hit {
+        0.0
+    } else {
+        parse_start.elapsed().as_secs_f64() * 1000.0
+    };
+    let mut cache_error = None;
+    if !cache_hit
+        && request.load(Ordering::Relaxed) == revision
+        && content.blocks.iter().map(String::len).sum::<usize>() <= 16 * 1024 * 1024
+    {
+        if let Some((root, budget)) = cache {
+            let start = Instant::now();
+            if let Err(error) =
+                crate::storage::write_cache(root, key.as_ref().unwrap(), &content, budget)
+            {
+                cache_error = Some(error);
+            }
+            cache_ms += start.elapsed().as_secs_f64() * 1000.0;
+        }
+    }
+    if request.load(Ordering::Relaxed) != revision {
+        return Err("打开请求已取消。".into());
+    }
     Ok(Document {
         path: path.to_string_lossy().into_owned(),
         title: path
@@ -196,7 +266,10 @@ pub fn read_document(path: &Path, request: &AtomicU64, revision: u64) -> Result<
         bytes: size,
         revision,
         read_ms,
-        parse_ms: parse_start.elapsed().as_secs_f64() * 1000.0,
+        parse_ms,
+        cache_ms,
+        cache_hit,
+        cache_error,
         content,
     })
 }

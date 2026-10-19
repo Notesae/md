@@ -1,13 +1,18 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { mkdir, writeFile, readFile } from "node:fs/promises";
+import { spawn, spawnSync } from "node:child_process";
+import { mkdir, writeFile, readFile, appendFile, rm } from "node:fs/promises";
 import path from "node:path";
 
 // 使用 Tauri 官方驱动和真实 WebView2/IPC，所有状态与测试产物隔离于工作目录。
 const root = process.cwd();
+// 每次运行从同一偏好与文章开始，前次失败不能影响本次断言。
+const preparation = spawnSync(process.execPath, ["scripts/desktop.mjs", "cargo", "run", "--offline", "--manifest-path", "src-tauri/Cargo.toml", "--no-default-features", "--example", "prepare_test"], { cwd: root, windowsHide: true, encoding: "utf8" });
+assert.equal(preparation.status, 0, preparation.stderr);
 const report = path.join(root, ".reports");
 const captures = path.join(root, ".impeccable/review");
 await mkdir(report, { recursive: true }); await mkdir(captures, { recursive: true });
+const watched = path.join(root, "fixtures/_watch-smoke.md");
+await writeFile(watched, "# 阅读位置验证\n\n" + Array.from({ length: 160 }, (_, index) => `## 段落 ${index}\n\n第 ${index} 段内容：外部更新后，应保留用户正在阅读的内容与位置。\n\n`).join(""));
 const binary = path.resolve(process.argv[2] ?? ".tools/target/debug/md-reader.exe");
 const driver = spawn(path.join(root, ".tools/cargo/bin/tauri-driver.exe"), ["--native-driver", path.join(root, ".tools/webdriver/msedgedriver.exe"), "--port", "4450", "--native-port", "4451"], {
   cwd: root, windowsHide: true, env: { ...process.env, MD_BOOTSTRAP_DIR: path.join(root, ".runtime/desktop-smoke/bootstrap"), TEMP: path.join(root, ".tools/tmp"), TMP: path.join(root, ".tools/tmp") },
@@ -20,6 +25,9 @@ driver.on("error", (error) => { driverLog += error.message; });
 const endpoint = "http://127.0.0.1:4450";
 let sessionId;
 const checks = [];
+const positions = [];
+// 记录视口中实际命中的源块，区分百分比变化和可见内容漂移。
+const visiblePosition = () => script("const pane = document.querySelector('#reading-pane'); const rect = pane.getBoundingClientRect(); const block = document.elementFromPoint(rect.left + rect.width / 2, rect.top + Math.min(80, rect.height / 3))?.closest('.md-block'); return {ratio: pane.scrollTop / (pane.scrollHeight - pane.clientHeight), heading: document.querySelector('.outline-link[aria-current]')?.textContent, block: block?.dataset.block, text: block?.textContent.slice(0,100), top: block?.getBoundingClientRect().top, scroll: pane.scrollTop, height: pane.scrollHeight};");
 
 /** 保留 WebDriver 原始错误，不将不支持或脚本失败吞掉并伪装为测试成功。 */
 async function command(method, resource, body) {
@@ -76,13 +84,33 @@ try {
   await screenshot("desktop");
   await click('[data-action="theme"]');
   await until(() => script("return document.documentElement.dataset.theme === 'dark';"), "深色切换失败");
+  await until(async () => (await invoke("get_session")).state.preferences.theme === "dark", "深色偏好未写入后台");
   await screenshot("desktop-dark");
   await click('[data-action="settings"]');
   await until(() => script("return !document.querySelector('#settings').hidden;"), "设置未打开");
+  await until(() => script("return document.querySelector('#storage-status')?.textContent.includes('总占用');"), "存储分类统计没有完成");
   await screenshot("settings");
   assert.ok(await script("return document.querySelector('#data-root').textContent.length > 0;"));
   checks.push("同窗口设置、深色主题与实际数据位置");
+  const storageBefore = await invoke("get_storage_info");
+  assert.ok(storageBefore.usage.cacheBytes > 0);
+  const stateBeforeCleanup = await invoke("get_session");
+  await invoke("clear_cache");
+  assert.equal((await invoke("get_storage_info")).usage.cacheBytes, 0);
+  const stateAfterCleanup = await invoke("get_session");
+  assert.deepEqual(stateBeforeCleanup.state, stateAfterCleanup.state);
+  checks.push("实际缓存生成、分类统计、清缓存保留偏好和历史");
+  await click("#cache-enabled");
+  await until(async () => !(await invoke("get_session")).state.preferences.persistentCache, "关闭缓存未保存");
   await click('[data-action="settings"]');
+  const oldRevision = await script("return document.querySelector('#article').dataset.revision;");
+  await script("Array.from(document.querySelectorAll('#file-tree .file-row')).find(button => button.textContent.includes('welcome.md')).click();");
+  await until(() => script("return document.querySelector('#article').dataset.revision !== arguments[0] && !document.querySelector('#document-status').textContent.includes('正在打开');", [oldRevision]), "关闭缓存后重新打开未完成");
+  assert.equal((await invoke("get_storage_info")).usage.cacheBytes, 0);
+  await click('[data-action="settings"]'); await click("#cache-enabled");
+  await until(async () => (await invoke("get_session")).state.preferences.persistentCache, "重新启用缓存未保存");
+  await click('[data-action="settings"]');
+  checks.push("设置页关闭持久缓存后实际打开文章不产生缓存");
   assert.ok(await script("return document.documentElement.scrollWidth <= document.documentElement.clientWidth;"));
 
   await new Promise((resolve) => setTimeout(resolve, 900));
@@ -90,13 +118,42 @@ try {
   assert.equal(persisted.preferences.theme, "dark");
   assert.ok(persisted.recent.length > 0);
   checks.push("主题与阅读历史实际写入 state，独立于 WebView 缓存");
+
+  await until(() => script("return Array.from(document.querySelectorAll('#file-tree .file-row')).some(button => button.textContent.includes('_watch-smoke.md'));"), "按需目录没有包含测试文章");
+  await script("Array.from(document.querySelectorAll('#file-tree .file-row')).find(button => button.textContent.includes('_watch-smoke.md')).click();");
+  await until(() => script("return document.querySelector('#article h1')?.textContent.includes('阅读位置验证');"), "文件树没有打开文章");
+  await until(() => script("return document.querySelectorAll('#article .md-block').length >= 320;"), "长篇文章未完整展示");
+  await script("const pane = document.querySelector('#reading-pane'); pane.scrollTop = (pane.scrollHeight - pane.clientHeight) * .5;");
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const beforeRefresh = await visiblePosition(); positions.push(beforeRefresh);
+  await appendFile(watched, "\n## 外部更新验证\n\n应自动刷新。\n");
+  await until(() => script("return document.querySelector('#article').textContent.includes('外部更新验证');"), "外部修改没有自动刷新");
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const afterRefresh = await visiblePosition(); positions.push(afterRefresh);
+  assert.ok(Math.abs(beforeRefresh.ratio - afterRefresh.ratio) < .05, JSON.stringify({ beforeRefresh, afterRefresh }));
+  assert.equal(afterRefresh.heading, beforeRefresh.heading, "刷新应保留正在阅读的标题位置");
+  checks.push("文件树打开、编辑器写入后自动刷新与阅读位置保持");
+  await click('[data-action="settings"]');
+  await appendFile(watched, "\n## 设置页期间更新\n\n返回阅读后刷新。\n");
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  assert.equal(await script("return document.querySelector('#settings').hidden;"), false);
+  await click('[data-action="settings"]');
+  await until(() => script("return document.querySelector('#article').textContent.includes('设置页期间更新');"), "返回阅读后没有刷新延迟的变更");
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(await script("return document.querySelector('.outline-link[aria-current]')?.textContent;"), beforeRefresh.heading);
+  checks.push("设置页期间文件变化延迟刷新并保留原阅读锚点");
+  await script("Array.from(document.querySelectorAll('#file-tree .file-row')).find(button => button.textContent.includes('welcome.md')).click();");
+  await until(() => script("return document.querySelector('#document-name').textContent === 'welcome.md';"), "测试后未恢复样例文章");
   await writeFile(path.join(report, "desktop-smoke.json"), JSON.stringify({ binary, date: new Date().toISOString(), checks, result: "passed" }, null, 2));
   console.log(JSON.stringify({ result: "passed", checks }, null, 2));
 } catch (error) {
-  await writeFile(path.join(report, "desktop-smoke.json"), JSON.stringify({ binary, checks, result: "failed", error: String(error), driverLog }, null, 2));
+  const trace = sessionId ? await invoke("get_session").catch(() => null) : null;
+  if (sessionId) await screenshot("failure").catch(() => {});
+  await writeFile(path.join(report, "desktop-smoke.json"), JSON.stringify({ binary, checks, result: "failed", error: String(error), driverLog, trace, positions }, null, 2));
   console.error(error); process.exitCode = 1;
 } finally {
   if (sessionId) await command("DELETE", `/session/${sessionId}`).catch(() => {});
   driver.kill();
+  await rm(watched, { force: true });
   await writeFile(path.join(report, "webdriver.log"), driverLog);
 }

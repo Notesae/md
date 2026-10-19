@@ -15,6 +15,8 @@ pub struct Owner {
     pub app_id: String,
     pub format_version: u32,
     pub instance_id: Uuid,
+    #[serde(default)]
+    pub state_written: bool,
 }
 
 /// 阅读偏好独立于浏览器存储，重建 WebView 后仍然有效。
@@ -51,6 +53,12 @@ pub struct RecentFile {
     pub path: String,
     pub position: f64,
     pub opened_at: u64,
+    #[serde(default)]
+    pub block: Option<usize>,
+    #[serde(default)]
+    pub offset: f64,
+    #[serde(default)]
+    pub anchor_hash: Option<String>,
 }
 
 /// 主窗口布局随必要数据保存，不依赖会被清理的 WebView 本地存储。
@@ -97,6 +105,8 @@ pub struct Bootstrap {
     pub reset_webview: Option<Vec<crate::migration::SessionProcess>>,
     #[serde(default)]
     pub notice: Option<String>,
+    #[serde(default)]
+    pub force_recovery: bool,
 }
 
 /// 拒绝共享路径、盘根以及任意层级的符号链接或 Windows 重解析点。
@@ -231,6 +241,7 @@ pub fn initialize_root(root: &Path) -> Result<Owner, String> {
         app_id: "io.notesae.mdreader".into(),
         format_version: 1,
         instance_id: Uuid::new_v4(),
+        state_written: false,
     };
     atomic_json(&root.join("owner.json"), &owner)?;
     for name in MANAGED_DIRECTORIES {
@@ -245,17 +256,19 @@ pub fn read_owner(root: &Path) -> Result<Owner, String> {
     validate_local_path(&root.join("owner.json"))?;
     let owner: Owner = read_json(&root.join("owner.json"), 4096)?;
     if owner.format_version != 1 || owner.app_id != "io.notesae.mdreader" {
-        return Err("数据目录版本不受支持，请使用对应版本的应用。".into());
+        return Err("数据目录不属于 MD，或格式版本不受支持。".into());
     }
     Ok(owner)
 }
 
 pub fn load_state(root: &Path) -> Result<AppState, String> {
-    read_owner(root)?;
+    let owner = read_owner(root)?;
     let path = root.join("state/preferences.json");
     validate_local_path(&path)?;
     if path.exists() {
         read_json(&path, 4 * 1024 * 1024)
+    } else if owner.state_written {
+        Err("已保存的阅读状态丢失，已停止自动重置，请恢复数据目录。".into())
     } else {
         Ok(AppState::default())
     }
@@ -263,7 +276,7 @@ pub fn load_state(root: &Path) -> Result<AppState, String> {
 
 /// 保存前限制容量和偏好范围，防止异常界面请求造成无限记录或不可用布局。
 pub fn save_state(root: &Path, state: &AppState) -> Result<(), String> {
-    read_owner(root)?;
+    let mut owner = read_owner(root)?;
     let preferences = &state.preferences;
     if !(14..=28).contains(&preferences.font_size)
         || !(560..=1200).contains(&preferences.content_width)
@@ -278,7 +291,12 @@ pub fn save_state(root: &Path, state: &AppState) -> Result<(), String> {
     if serde_json::to_vec(state).map_err(|e| e.to_string())?.len() > 4 * 1024 * 1024 {
         return Err("必要状态超过 4MiB，未覆盖已有记录。".into());
     }
-    atomic_json(&root.join("state/preferences.json"), state)
+    atomic_json(&root.join("state/preferences.json"), state)?;
+    if !owner.state_written {
+        owner.state_written = true;
+        atomic_json(&root.join("owner.json"), &owner)?;
+    }
+    Ok(())
 }
 
 pub fn save_bootstrap(path: &Path, bootstrap: &Bootstrap) -> Result<(), String> {

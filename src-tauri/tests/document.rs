@@ -46,3 +46,39 @@ fn local_images_cannot_escape_the_document_folder() {
     assert!(resolve_local_image(&article, "https://example.com/a.png").is_err());
     assert!(resolve_local_image(&article, "bad.svg").is_err());
 }
+
+// 缓存命中、正文变化和关闭持久缓存走同一只读文件路径，不允许陈旧正文覆盖新内容。
+#[test]
+fn document_cache_is_content_addressed_and_can_be_disabled() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("data");
+    md_reader::storage::initialize_root(&root).unwrap();
+    let path = temp.path().join("note.md");
+    fs::write(&path, "# 第一篇").unwrap();
+    let request = AtomicU64::new(1);
+    let first =
+        md_reader::document::read_document(&path, &request, 1, Some((&root, 1024 * 1024))).unwrap();
+    assert!(!first.cache_hit);
+    let second =
+        md_reader::document::read_document(&path, &request, 1, Some((&root, 1024 * 1024))).unwrap();
+    assert!(second.cache_hit);
+    fs::write(&path, "# 新的正文").unwrap();
+    let changed =
+        md_reader::document::read_document(&path, &request, 1, Some((&root, 1024 * 1024))).unwrap();
+    assert!(!changed.cache_hit);
+    assert_eq!(changed.content.headings[0].title, "新的正文");
+    md_reader::storage::clear_managed_child(&root, "cache").unwrap();
+    md_reader::document::read_document(&path, &request, 1, None).unwrap();
+    assert_eq!(fs::read_dir(root.join("cache")).unwrap().count(), 0);
+}
+
+// 段前插入新内容会改变目录编号，但原段的源块标识必须稳定以恢复阅读位置。
+#[test]
+fn block_identity_survives_preceding_insertions() {
+    let request = AtomicU64::new(1);
+    let before = parse_document("# 原标题\n\n目标段落。", &request, 1).unwrap();
+    let after = parse_document("# 新增标题\n\n# 原标题\n\n目标段落。", &request, 1).unwrap();
+    assert_eq!(before.block_hashes.len(), before.blocks.len());
+    assert_eq!(after.block_hashes.len(), after.blocks.len());
+    assert_eq!(before.block_hashes[1], after.block_hashes[2]);
+}

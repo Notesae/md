@@ -7,7 +7,8 @@ rust-version = "1.85"
 
 [lib]
 name = "md_reader"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# Windows 桌面入口直接链接 Rust 库，调试符号由可执行文件生成。
+crate-type = ["rlib"]
 
 [[bin]]
 name = "md-reader"

@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { ReaderDocument } from "./types";
+import type { ReaderDocument, ReadingPosition } from "./types";
 import { findMatches } from "./search";
 import { icon } from "./icons";
 import "katex/dist/katex.min.css";
@@ -13,12 +13,14 @@ export class Reader {
   private current: ReaderDocument | null = null;
   private worker: Worker | null = null;
   private observer: IntersectionObserver | null = null;
-  private headingObserver: IntersectionObserver | null = null;
+  private activeHeading = "";
   private jobs = new Map<number, HTMLElement>();
   private blobs = new Map<HTMLElement, string>();
   private jobId = 0;
   private ranges: Range[] = [];
   private matchIndex = -1;
+  // 保留截断标记，切换结果时继续向用户显示搜索上限。
+  private matchesTruncated = false;
   private query = "";
   private complete = false;
   private searchTimer = 0;
@@ -49,12 +51,11 @@ export class Reader {
     this.current = document;
     this.complete = false;
     this.article.replaceChildren();
+    this.article.dataset.revision = String(document.revision);
     this.viewport.scrollTop = 0;
     const epoch = this.epoch;
-    this.headingObserver = new IntersectionObserver((entries) => {
-      for (const entry of entries) if (entry.isIntersecting) this.onHeading(entry.target.id);
-    }, { root: this.viewport, rootMargin: "-5% 0px -65% 0px" });
     this.observer = new IntersectionObserver((entries) => {
+      if (epoch !== this.epoch) return;
       for (const entry of entries) {
         const element = entry.target as HTMLElement;
         if (element.matches(".image-slot")) {
@@ -105,7 +106,6 @@ export class Reader {
 
   /** 统一添加复制操作和资源占位；源文档无法提供按钮或改变此处行为。 */
   private prepareBlock(section: HTMLElement): void {
-    for (const heading of section.querySelectorAll("h1[id],h2[id],h3[id],h4[id],h5[id],h6[id]")) this.headingObserver?.observe(heading);
     for (const code of section.querySelectorAll<HTMLElement>("pre > code")) {
       const pre = code.parentElement!;
       pre.classList.add("code-frame");
@@ -154,7 +154,7 @@ export class Reader {
 
   /** 本地资源从受限 IPC 读取二进制；远程资源只在用户点击且为 HTTPS 时加载。 */
   private async loadImage(slot: HTMLElement, explicit: boolean): Promise<void> {
-    if (!this.current || slot.dataset.loading === "true" || this.blobs.has(slot) || slot.querySelector("img")) return;
+    if (!this.current || !slot.isConnected || slot.dataset.loading === "true" || this.blobs.has(slot) || slot.querySelector("img")) return;
     const epoch = this.epoch;
     const index = Number(slot.dataset.image);
     const image = this.current.images[index];
@@ -166,7 +166,7 @@ export class Reader {
         source = image.url;
       } else {
         const data = await invoke<ArrayBuffer>("read_image", { revision: this.current.revision, index });
-        if (epoch !== this.epoch || slot.dataset.visible === "false") return;
+        if (epoch !== this.epoch || !slot.isConnected || slot.dataset.visible === "false") return;
         source = URL.createObjectURL(new Blob([data]));
         this.blobs.set(slot, source);
       }
@@ -200,6 +200,7 @@ export class Reader {
       text.push(content); length += content.length;
     }
     const result = findMatches(text.join(""), query);
+    this.matchesTruncated = result.truncated;
     let cursor = 0;
     for (const match of result.matches) {
       while (cursor < nodes.length - 1 && nodes[cursor].end <= match.start) cursor++;
@@ -218,7 +219,7 @@ export class Reader {
     if (this.ranges.length) this.jumpMatch(1, result.truncated);
   }
 
-  jumpMatch(step: number, truncated = false): void {
+  jumpMatch(step: number, truncated = this.matchesTruncated): void {
     if (!this.ranges.length) return;
     this.matchIndex = (this.matchIndex + step + this.ranges.length) % this.ranges.length;
     const range = this.ranges[this.matchIndex];
@@ -228,10 +229,48 @@ export class Reader {
   }
 
   async jumpHeading(id: string): Promise<void> {
+    const epoch = this.epoch;
     await this.finished;
+    if (epoch !== this.epoch) return;
     const heading = this.article.querySelector<HTMLElement>(`#${CSS.escape(id)}`);
     heading?.scrollIntoView({ block: "start" });
     if (heading) { heading.tabIndex = -1; heading.focus({ preventScroll: true }); }
+  }
+
+  /** 只命中视口内的一个块，目录用有序元数据二分定位，滚动时不扫描全文布局。 */
+  capturePosition(): ReadingPosition {
+    const rect = this.viewport.getBoundingClientRect();
+    const element = document.elementFromPoint(rect.left + rect.width / 2, rect.top + Math.min(80, rect.height / 3));
+    const section = element?.closest<HTMLElement>(".md-block");
+    const block = section && this.article.contains(section) ? Number(section.dataset.block) : null;
+    const result = { position: Math.max(0, Math.min(1, this.viewport.scrollTop / Math.max(1, this.viewport.scrollHeight - this.viewport.clientHeight))),
+      block, offset: section ? rect.top - section.getBoundingClientRect().top : 0, anchorHash: block === null ? null : this.current?.blockHashes[block] ?? null };
+    if (block !== null && this.current) {
+      const headings = this.current.headings; let low = 0; let high = headings.length;
+      while (low < high) { const middle = (low + high) >>> 1; if (headings[middle].block <= block) low = middle + 1; else high = middle; }
+      const id = headings[low - 1]?.id ?? "";
+      if (id !== this.activeHeading) { this.activeHeading = id; this.onHeading(id); }
+    }
+    return result;
+  }
+
+  /** 优先匹配源块摘要；插入新段时选择最邻近的同内容块，找不到才回退百分比。 */
+  async restorePosition(position: ReadingPosition): Promise<void> {
+    const epoch = this.epoch; await this.finished;
+    if (!this.current || epoch !== this.epoch) return;
+    let block = position.block;
+    if (position.anchorHash && (block === null || this.current.blockHashes[block] !== position.anchorHash)) {
+      let nearest: number | null = null;
+      for (let index = 0; index < this.current.blockHashes.length; index++) {
+        if (this.current.blockHashes[index] === position.anchorHash && (nearest === null || Math.abs(index - (block ?? 0)) < Math.abs(nearest - (block ?? 0)))) nearest = index;
+      }
+      block = nearest;
+    }
+    const section = block === null ? null : this.article.querySelector<HTMLElement>(`[data-block="${block}"]`);
+    if (!section) { this.viewport.scrollTop = position.position * (this.viewport.scrollHeight - this.viewport.clientHeight); return; }
+    section.scrollIntoView({ block: "start" }); await frame();
+    if (epoch !== this.epoch) return;
+    this.viewport.scrollTop += section.getBoundingClientRect().top - this.viewport.getBoundingClientRect().top + position.offset;
   }
 
   /** 释放一篇文章持有的线程、观察器、范围及图片，不保留无限文档缓存。 */
@@ -239,7 +278,7 @@ export class Reader {
     this.epoch++;
     this.worker?.terminate(); this.worker = null;
     this.observer?.disconnect(); this.observer = null;
-    this.headingObserver?.disconnect(); this.headingObserver = null;
+    this.activeHeading = "";
     this.jobs.clear();
     for (const url of this.blobs.values()) URL.revokeObjectURL(url);
     this.blobs.clear();
