@@ -1,0 +1,40 @@
+name: Publish verified MD v0.1.2
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: md-publish-v0.1.2
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.repository == 'Notesae/md' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Test publication guards without network or credentials
+        run: python3 -m unittest discover -s tests -p 'test_publish_v012.py' -v
+      - name: Publish only the pinned CI assets and verify fresh Release downloads
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_PROMPT_DISABLED: '1'
+          GH_NO_UPDATE_NOTIFIER: '1'
+        run: python3 scripts/publish_v012.py
+      - name: Retain publication state and verification evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: md-v0.1.2-publication-verification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .runtime/publish-v0.1.2/*.json
+          if-no-files-found: warn
+          retention-days: 7
