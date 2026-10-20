@@ -163,6 +163,32 @@ function syncOutlineButton(): void {
   panel.inert = !visible;
 }
 
+/** 栏宽过渡期间锁住 scrollTop，避免正文重排时滚动锚定把阅读位置带走。 */
+let paneOffsetTimer = 0;
+let paneOffsetHold: (() => void) | null = null;
+function withStableOffset(change: () => void): void {
+  const shell = document.querySelector<HTMLElement>(".app-shell")!;
+  const root = document.querySelector("#app")!;
+  const columns = () => `${root.classList.contains("no-sidebar")}:${root.classList.contains("no-outline")}`;
+  const before = columns();
+  const top = pane.scrollTop;
+  shell.classList.add("pane-resizing");
+  change();
+  if (columns() === before) { if (!paneOffsetHold) shell.classList.remove("pane-resizing"); return; }
+  if (paneOffsetHold) pane.removeEventListener("scroll", paneOffsetHold);
+  if (pane.scrollTop !== top) pane.scrollTop = top;
+  const hold = () => { if (pane.scrollTop !== top) pane.scrollTop = top; };
+  paneOffsetHold = hold;
+  pane.addEventListener("scroll", hold);
+  window.clearTimeout(paneOffsetTimer);
+  paneOffsetTimer = window.setTimeout(() => {
+    pane.removeEventListener("scroll", hold);
+    if (paneOffsetHold === hold) paneOffsetHold = null;
+    if (pane.scrollTop !== top) pane.scrollTop = top;
+    shell.classList.remove("pane-resizing");
+  }, matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 240);
+}
+
 /** 合并滑块写入；失败提示持久化状态，不能伪装保存成功。 */
 function changePreferences(patch: Partial<Preferences>): void {
   preferences.update(patch); applyPreferences();
@@ -206,7 +232,7 @@ async function folderAction(kind: "pick" | "recent" | "close", path?: string): P
     const selected = await invoke<string | null>(kind === "pick" ? "pick_directory" : kind === "recent" ? "open_recent_directory" : "close_directory", kind === "recent" ? { path } : {});
     if (kind === "pick" && !selected) return;
     await refreshSession(); renderFolderView();
-    if (kind !== "close") changePreferences({ sidebar: true });
+    if (kind !== "close") withStableOffset(() => changePreferences({ sidebar: true }));
   } catch (error) { renderFolderView(); throw error; }
   finally { folderBusy = false; renderFolderControls(); }
 }
@@ -352,7 +378,7 @@ function toggleSettings(refresh = true): void {
   document.querySelector<HTMLElement>("#document-end")!.hidden = settingsOpen || !current;
   if (settingsOpen) {
     app.classList.remove("outline-drawer"); syncOutlineButton();
-    pane.scrollTop = 0; document.querySelector<HTMLElement>("#settings-title")!.focus();
+    pane.scrollTop = 0; document.querySelector<HTMLElement>("#settings-title")!.focus({ preventScroll: true });
     void import("./storage-settings").then(({ StorageSettings }) => {
       storageView ??= new StorageSettings(document.querySelector<HTMLElement>("#storage-controls")!, () => preferences.snapshot, changePreferences, () => preferences.flush(), message);
       if (settingsOpen) void storageView.activate();
@@ -380,7 +406,7 @@ function toggleSearch(show: boolean): void {
   bar.hidden = !show; bar.inert = !show;
   document.querySelector('[data-action="search"]')!.setAttribute("aria-expanded", String(show));
   const input = document.querySelector<HTMLInputElement>("#search-input")!;
-  if (show) { if (settingsOpen) toggleSettings(); reader.search(input.value); input.focus(); input.select(); }
+  if (show) { if (settingsOpen) toggleSettings(); reader.search(input.value); input.focus({ preventScroll: true }); input.select(); }
   else { reader.search(""); document.querySelector("#search-count")!.textContent = ""; pane.focus({ preventScroll: true }); }
 }
 
@@ -433,13 +459,13 @@ async function action(name: string): Promise<void> {
     else if (name === "close-search") toggleSearch(false);
     else if (name === "previous-match") reader.jumpMatch(-1);
     else if (name === "next-match") reader.jumpMatch(1);
-    else if (name === "sidebar") changePreferences({ sidebar: !preferences.snapshot.sidebar });
+    else if (name === "sidebar") withStableOffset(() => changePreferences({ sidebar: !preferences.snapshot.sidebar }));
     else if (name === "outline") {
       if (settingsOpen) toggleSettings();
       if (narrowLayout.matches) {
         app.classList.toggle("outline-drawer"); syncOutlineButton();
         if (app.classList.contains("outline-drawer")) (document.querySelector<HTMLElement>('.outline-link[aria-current="location"]') ?? document.querySelector<HTMLElement>(".outline-link") ?? document.querySelector<HTMLElement>("#outline-panel"))!.focus({ preventScroll: true });
-      } else changePreferences({ outline: !preferences.snapshot.outline });
+      } else withStableOffset(() => changePreferences({ outline: !preferences.snapshot.outline }));
     }
     else if (name === "theme") changePreferences({ theme: document.documentElement.dataset.theme === "dark" ? "light" : "dark" });
     else if (name === "settings") { if (!settingsOpen) await persistPosition(); toggleSettings(); }
