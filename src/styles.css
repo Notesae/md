@@ -135,6 +135,7 @@ kbd { font: 10px "Segoe UI", sans-serif; opacity: .8; margin-left: 16px; border:
 .math .katex { font-size: 1.07em; }
 .image-slot { display: block; margin: 20px 0; color: var(--muted); font-size: .8em; overflow-wrap: anywhere; }
 .image-slot img { display: block; max-width: 100%; height: auto; margin: auto; }
+.image-retry { margin: 8px 0 0; display: flex; }
 .load-remote { display: block; width: 100%; border: 1px dashed var(--line); border-radius: 4px; background: var(--panel); padding: 28px 20px; color: var(--muted); }
 .load-remote:hover { border-color: var(--accent); color: var(--accent); }
 .prose hr { border: 0; height: 1px; background: var(--line); margin: 32px 0; }
