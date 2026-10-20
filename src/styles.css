@@ -183,7 +183,7 @@ kbd { font: 10px "Segoe UI", sans-serif; opacity: .8; margin-left: 16px; border:
 @media (max-width: 650px) {
   .update-current, .update-channel { flex-wrap: wrap; gap: 12px; }
   .update-channel select { max-width: 100%; }
-  .update-actions button { min-height: 44px; }
+  .update-current button, .update-channel select, .update-actions button { min-height: 44px; }
   #update-install-dialog .dialog-actions { flex-wrap: wrap; }
 }
 .back-button { font-size: 11px; }

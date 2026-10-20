@@ -32,6 +32,8 @@ API digest、校验清单和构建记录必须交叉一致。安装包以流式�
 
 手动发布 workflow 沿用 tag + 成功 Quality run ID 的精确来源校验；仓库所有者已将仓库公开，发布脚本相应要求公开的 `Notesae/md`，保留所有旧 Release，且不修改仓库可见性或默认权限。未来版本仍需正常更新应用版本和 tag，不需要每次修改发布 workflow。
 
-此 PR 的浏览器演示和控制器回归使用合成 IPC；Rust 包校验与交接回归只创建隔离的伪安装包并注入失败/成功启动结果，绝不执行该文件。本机真实安装、卸载、用户当前应用替换均不作为自动测试步骤。真实版本 A→B 安装、用户取消向导、SmartScreen/未知发布者提示、断电或安装器中断恢复仍需单独隔离 Windows 验收；不得以单元测试、截图或编译成功代替这些结果。
+控制器回归和 `node tests/update-browser.mjs` 使用合成 IPC。浏览器脚本只运行真实更新组件与产品 CSS，拦截非本机请求，检查手动检查、字节进度、取消、真实 dialog 的焦点/Escape、保存失败及明确交接后的失败恢复；Windows Quality 将截图和摘要归档为 `md-updater-ui-*`。390px 截图仅验证组件容器，MD 桌面窗口的最小尺寸仍为 800×580。安装确认还会保存进入设置时捕获的阅读位置，避免异步保存期间继续滚动的位置遗漏。
+
+Rust 包校验与交接回归只创建隔离的伪安装包并注入失败/成功启动结果；字节流回归通过本机 HTTP 夹具覆盖进度、损坏、截断、超量和取消清理，不放宽产品 HTTPS 限制，绝不执行该文件。本机真实安装、卸载、用户当前应用替换均不作为自动测试步骤。真实版本 A→B 安装、用户取消向导、SmartScreen/未知发布者提示、断电或安装器中断恢复仍需单独隔离 Windows 验收；不得以单元测试、截图或编译成功代替这些结果。
 
 参考：[Tauri updater 的签名要求](https://v2.tauri.app/plugin/updater/#signing-updates)、[GitHub Release API](https://docs.github.com/en/rest/releases/releases)、[reqwest 超时配置](https://docs.rs/reqwest/0.13.5/reqwest/struct.ClientBuilder.html#method.read_timeout)。

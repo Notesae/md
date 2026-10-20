@@ -275,9 +275,10 @@ function renderOutline(): void {
 
 function position(): number { return Math.max(0, Math.min(1, pane.scrollTop / Math.max(1, pane.scrollHeight - pane.clientHeight))); }
 
-async function persistPosition(): Promise<void> {
-  if (!current || settingsOpen) return;
-  const path = current.path; const progress = restoringPosition ?? reader.capturePosition();
+// 设置页复用滚动区域；安装前使用进入设置时捕获的位置，不能读取设置页的滚动进度。
+async function persistPosition(captured?: ReadingPosition): Promise<void> {
+  if (!current || (settingsOpen && !captured)) return;
+  const path = current.path; const progress = captured ?? restoringPosition ?? reader.capturePosition();
   const item = session.state.recent.find((item) => item.path === path);
   if (!item || (item.position === progress.position && item.block === progress.block && item.offset === progress.offset)) return;
   await invoke("save_position", { path, ...progress });
@@ -361,7 +362,7 @@ function toggleSettings(refresh = true): void {
       if (settingsOpen) void storageView.activate();
     }).catch((error) => message(`无法打开存储设置：${String(error)}`, true));
     void import("./update-settings").then(({ UpdateSettings }) => {
-      updateView ??= new UpdateSettings(document.querySelector<HTMLElement>("#update-controls")!, async () => { await persistPosition(); await preferences.flush(); });
+      updateView ??= new UpdateSettings(document.querySelector<HTMLElement>("#update-controls")!, async () => { await persistPosition(settingsPosition); await preferences.flush(); });
       if (settingsOpen) void updateView.activate();
     }).catch((error) => message(`无法打开更新设置：${String(error)}`, true));
   } else {

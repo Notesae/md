@@ -525,8 +525,13 @@ mod tests {
             stream
                 .set_read_timeout(Some(Duration::from_secs(3)))
                 .unwrap();
-            let mut request = [0u8; 4096];
-            stream.read(&mut request).unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                let mut part = [0u8; 512];
+                let count = stream.read(&mut part).unwrap();
+                assert!(count > 0 && request.len() + count <= 8192);
+                request.extend_from_slice(&part[..count]);
+            }
             let length = length
                 .map(|value| format!("Content-Length: {value}\r\n"))
                 .unwrap_or_default();

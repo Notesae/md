@@ -7,13 +7,17 @@ const native = vi.hoisted(() => ({
   show: vi.fn(), restore: vi.fn(), capture: vi.fn(), closeRequested: vi.fn(),
   search: vi.fn(), dispose: vi.fn(), title: vi.fn(),
   reader: null as { onMessage: (text: string) => void } | null,
+  beforeUpdateInstall: null as (() => Promise<void>) | null,
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke, isTauri: () => true }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: async (name: string, handler: (event: { payload: string }) => void) => { native.handlers.set(name, handler); return () => {}; } }));
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ setTitle: native.title, onCloseRequested: native.closeRequested }) }));
 vi.mock("../src/storage-settings", () => ({ StorageSettings: class { activate() {} deactivate() {} } }));
-vi.mock("../src/update-settings", () => ({ UpdateSettings: class { activate() {} deactivate() {} } }));
+vi.mock("../src/update-settings", () => ({ UpdateSettings: class {
+  constructor(_container: HTMLElement, save: () => Promise<void>) { native.beforeUpdateInstall = save; }
+  activate() {} deactivate() {}
+} }));
 // 只替换排版和原生边界；真实主窗口控制器、DOM 事件与异步打开流程参与测试。
 vi.mock("../src/reader", () => ({ Reader: class {
   onMessage = (_text: string) => {};
@@ -581,4 +585,25 @@ describe("异步关闭保存", () => {
     native.invoke.mockImplementation(original); const retry = { preventDefault: vi.fn() };
     await handler(retry); expect(retry.preventDefault).not.toHaveBeenCalled();
   });
+});
+
+it("安装确认保存进入设置前的位置，失败必须阻止交接并可重试", async () => {
+  await vi.advanceTimersByTimeAsync(0);
+  const original = native.invoke.getMockImplementation()!;
+  const entering = deferred<void>();
+  native.capture.mockReturnValue({ ...anchor, offset: 77 });
+  native.invoke.mockImplementation((name: string, args?: unknown) => name === "save_position"
+    ? entering.promise : original(name, args));
+  clickSettings(); await settle();
+  // 进入设置前的保存尚未返回时，用户继续滚动；设置快照必须保留这个更新位置。
+  const captured = { ...anchor, offset: 88 };
+  native.capture.mockReturnValue(captured); entering.resolve(); await settle();
+  native.capture.mockReturnValue({ position: 0, block: null, offset: 0 });
+  native.invoke.mockImplementation((name: string, args?: unknown) => name === "save_position"
+    ? Promise.reject(new Error("位置保存失败")) : original(name, args));
+  await expect(native.beforeUpdateInstall!()).rejects.toThrow("位置保存失败");
+  expect(native.invoke).toHaveBeenCalledWith("save_position", { path, ...captured });
+  native.invoke.mockImplementation(original);
+  await expect(native.beforeUpdateInstall!()).resolves.toBeUndefined();
+  expect(native.invoke).toHaveBeenLastCalledWith("save_position", { path, ...captured });
 });
