@@ -165,6 +165,27 @@ kbd { font: 10px "Segoe UI", sans-serif; opacity: .8; margin-left: 16px; border:
 .range-setting output { width: 54px; text-align: right; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 .path-value { color: var(--accent); padding: 12px 14px; background: var(--panel); border-radius: 4px; overflow-wrap: anywhere; line-height: 1.8; }
 .version { font-size: 11px; color: var(--muted); padding-top: 16px; }
+/* 更新沿用阅读设置的纸面与墨绿，仅在下载或安装确认时突出当前动作。 */
+.update-current strong, .update-result progress, #update-progress-label { font-variant-numeric: tabular-nums; }
+.update-current { align-items: flex-start; }
+.update-result { background: var(--panel); padding: 16px 18px; border-radius: 4px; }
+#update-status { margin: 0; font-size: 13px; line-height: 1.8; min-height: 3.6em; }
+.update-result[data-phase="error"] #update-status { color: var(--danger); }
+#update-offer h3 { margin: 14px 0 3px; font-size: 15px; font-weight: 600; }
+.update-result details { font-size: 12px; margin: 12px 0; line-height: 1.8; }
+.update-result summary { cursor: pointer; color: var(--accent); }
+#update-notes { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 220px; overflow: auto; }
+#update-sha { display: block; word-break: break-all; font-size: 11px; }
+#update-progress { display: block; width: 100%; height: 8px; margin-top: 16px; accent-color: var(--accent); }
+.update-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 14px; }
+#update-install-status { padding: 10px 12px; min-height: 3.8em; color: var(--muted); background: var(--panel); border-radius: 4px; }
+#update-install-status[role="alert"] { color: var(--danger); }
+@media (max-width: 650px) {
+  .update-current, .update-channel { flex-wrap: wrap; gap: 12px; }
+  .update-channel select { max-width: 100%; }
+  .update-actions button { min-height: 44px; }
+  #update-install-dialog .dialog-actions { flex-wrap: wrap; }
+}
 .back-button { font-size: 11px; }
 /* 存储使用清晰的分类账呈现，维护操作才需要保护焦点的确认界面。 */
 .storage-actions { display: flex; gap: 10px; flex-wrap: wrap; margin: 16px 0; }

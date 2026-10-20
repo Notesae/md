@@ -13,6 +13,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke, isTauri: () => t
 vi.mock("@tauri-apps/api/event", () => ({ listen: async (name: string, handler: (event: { payload: string }) => void) => { native.handlers.set(name, handler); return () => {}; } }));
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ setTitle: native.title, onCloseRequested: native.closeRequested }) }));
 vi.mock("../src/storage-settings", () => ({ StorageSettings: class { activate() {} deactivate() {} } }));
+vi.mock("../src/update-settings", () => ({ UpdateSettings: class { activate() {} deactivate() {} } }));
 // 只替换排版和原生边界；真实主窗口控制器、DOM 事件与异步打开流程参与测试。
 vi.mock("../src/reader", () => ({ Reader: class {
   onMessage = (_text: string) => {};

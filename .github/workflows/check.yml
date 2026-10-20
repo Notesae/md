@@ -61,6 +61,8 @@ jobs:
         run: npm run test:core -- --locked
       - name: Desktop compilation
         run: npm run check:desktop -- --locked
+      - name: Isolated updater handoff regressions (no application or installer launch)
+        run: npm run desktop -- test --lib update_service::tests --locked
       - name: Release installer
         run: npm run build:desktop
       - name: Current-user install, association, and uninstall paths

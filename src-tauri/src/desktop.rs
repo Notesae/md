@@ -3,6 +3,10 @@ use crate::{
     migration,
     storage::{self, AppState, Bootstrap, Preferences, RecentFile},
 };
+use crate::{
+    update::Channel,
+    update_service::{Snapshot as UpdateSnapshot, UpdateService},
+};
 use fs2::FileExt;
 use notify::Watcher;
 use serde::Serialize;
@@ -1040,6 +1044,91 @@ fn bootstrap() -> Result<Option<Runtime>, String> {
     Ok(Some(Runtime::new(root, state, lock, path)))
 }
 
+#[tauri::command]
+fn get_update_status(updater: tauri::State<'_, UpdateService>) -> Result<UpdateSnapshot, String> {
+    updater.snapshot()
+}
+
+#[tauri::command]
+fn check_for_updates(
+    channel: Channel,
+    updater: tauri::State<'_, UpdateService>,
+) -> Result<UpdateSnapshot, String> {
+    updater.start_check(channel)
+}
+
+#[tauri::command]
+fn download_update(updater: tauri::State<'_, UpdateService>) -> Result<UpdateSnapshot, String> {
+    updater.start_download()
+}
+
+#[tauri::command]
+fn cancel_update(updater: tauri::State<'_, UpdateService>) -> Result<UpdateSnapshot, String> {
+    updater.cancel()
+}
+
+#[tauri::command]
+fn open_update_release(updater: tauri::State<'_, UpdateService>) -> Result<(), String> {
+    let view = updater.snapshot()?;
+    let url = view
+        .offer
+        .as_ref()
+        .map(|offer| offer.release_url.as_str())
+        .unwrap_or(crate::update::RELEASES_PAGE);
+    open::that(url)
+        .map_err(|_| "无法打开浏览器，请手动访问 github.com/Notesae/md/releases。".into())
+}
+
+/// 安装必须经设置页单独确认。仅打开交互式当前用户安装器，不静默替换或删除数据。
+#[tauri::command]
+async fn install_update(
+    app: tauri::AppHandle,
+    runtime: tauri::State<'_, SharedRuntime>,
+    updater: tauri::State<'_, UpdateService>,
+) -> Result<(), String> {
+    if !cfg!(all(windows, target_arch = "x86_64")) {
+        return Err("应用内安装目前仅支持 Windows x64。".into());
+    }
+    let runtime = runtime.inner().clone();
+    let updater = updater.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut marked = false;
+        let result = updater.install_with(
+            || {
+                let mut state = runtime.lock().map_err(|_| "应用状态不可用")?;
+                if state.maintenance {
+                    return Err("正在维护数据，暂不能安装更新。".into());
+                }
+                storage::save_state(&state.root, &state.state)?;
+                state.maintenance = true;
+                marked = true;
+                Ok(())
+            },
+            |path| {
+                std::process::Command::new(path)
+                    .arg("/UPDATE")
+                    .spawn()
+                    .map(|_| ())
+                    .map_err(|_| "无法启动安装程序，当前应用和下载包已保留，请重试。".into())
+            },
+        );
+        if result.is_err() && marked {
+            if let Ok(mut state) = runtime.lock() {
+                state.maintenance = false;
+            }
+        }
+        result
+    })
+    .await
+    .map_err(|_| "安装交接未完成，请检查更新状态。")??;
+    // 先返回成功给前端，再退出释放文件与启动锁；没有延迟安装或下一次启动自动执行。
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        app.exit(0);
+    });
+    Ok(())
+}
+
 /// 单实例插件先注册，随后完成存储引导，最后用用户目录创建唯一 WebView。
 pub fn run() {
     // NSIS 勾选清理后同步调用此入口；普通卸载不会运行它，也不删除任何原文。
@@ -1106,6 +1195,11 @@ pub fn run() {
                     }
                 }
             }
+            let maintenance = Arc::new(Mutex::new(()));
+            app.manage(UpdateService::new(
+                runtime.root.clone(),
+                maintenance.clone(),
+            ));
             app.manage(Arc::new(Mutex::new(runtime)));
             app.manage(Tasks {
                 generation: Arc::new(AtomicU64::new(0)),
@@ -1113,7 +1207,7 @@ pub fn run() {
                 images: Arc::new(tokio::sync::Semaphore::new(2)),
                 storage_generation: Arc::new(AtomicU64::new(0)),
                 folder_generation: Arc::new(AtomicU64::new(0)),
-                maintenance: Arc::new(Mutex::new(())),
+                maintenance,
             });
             let window =
                 WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
@@ -1150,6 +1244,9 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
+                if let Some(updater) = window.app_handle().try_state::<UpdateService>() {
+                    let _ = updater.cancel();
+                }
                 if let Some(runtime) = window.app_handle().try_state::<SharedRuntime>() {
                     if let Ok(mut runtime) = runtime.lock() {
                         runtime.state.window.maximized = window.is_maximized().unwrap_or(false);
@@ -1195,7 +1292,13 @@ pub fn run() {
             migrate_storage,
             reset_webview,
             app_ready,
-            retry_storage_cleanup
+            retry_storage_cleanup,
+            get_update_status,
+            check_for_updates,
+            download_update,
+            cancel_update,
+            open_update_release,
+            install_update
         ])
         .run(tauri::generate_context!());
     if let Err(error) = result {

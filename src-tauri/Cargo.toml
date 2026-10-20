@@ -17,7 +17,7 @@ required-features = ["desktop"]
 
 [features]
 default = ["desktop"]
-desktop = ["dep:tauri", "dep:tauri-build", "dep:rfd", "dep:tauri-plugin-single-instance", "dep:notify", "dep:open", "dep:tokio"]
+desktop = ["dep:tauri", "dep:tauri-build", "dep:rfd", "dep:tauri-plugin-single-instance", "dep:notify", "dep:open", "dep:tokio", "dep:reqwest"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [], optional = true }
@@ -32,13 +32,16 @@ pulldown-cmark = "0.13"
 percent-encoding = "2"
 dunce = "1"
 sha2 = "0.10"
+semver = "1"
+url = "2"
 sysinfo = { version = "0.37", default-features = false, features = ["system"] }
 tauri = { version = "2", features = [], optional = true }
 rfd = { version = "0.15", optional = true }
 tauri-plugin-single-instance = { version = "2", optional = true }
 notify = { version = "8", optional = true }
 open = { version = "5", optional = true }
-tokio = { version = "1", features = ["sync"], optional = true }
+tokio = { version = "1", features = ["sync", "macros", "time"], optional = true }
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls"], optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }

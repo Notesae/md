@@ -80,7 +80,7 @@ def source(client, tag, run_id):
     """只接受同仓库 main 的成功 Quality push 构建，精确匹配 tag、版本、树与原始归档。"""
     version, run_id = inputs(tag, run_id)
     repo = client.api(f'repos/{REPO}')
-    require(repo['full_name'] == REPO and repo['id'] == REPO_ID and repo['private'] is True, 'Repository/visibility differs')
+    require(repo['full_name'] == REPO and repo['id'] == REPO_ID and repo['private'] is False, 'Expected the public MD repository')
     commit = resolve_tag(client, tag)
     run = client.api(f'repos/{REPO}/actions/runs/{run_id}')
     require((run['id'], run['head_sha'], run['head_branch'], run['event'], run['status'], run['conclusion'], run['path'])
@@ -316,7 +316,7 @@ def publish(client, target, files, output):
     guard()
     require(previous_releases(client, target) == old, 'Prior Release metadata changed; review required')
     record('published; five fresh downloads verified; old releases unchanged', release)
-    result = {**asdict(target), 'repository': REPO, 'private': True, 'sourceCi': target.ci_url,
+    result = {**asdict(target), 'repository': REPO, 'private': False, 'sourceCi': target.ci_url,
               'releaseId': release['id'], 'url': release['html_url'], 'prerelease': True,
               'releasePublished': True, 'postPublicationReDownload': True, 'allAssetsMatch': True,
               'previousReleaseIdsPreserved': sorted(old), 'nativeAcceptanceEstablished': False,
