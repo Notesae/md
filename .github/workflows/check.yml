@@ -69,3 +69,13 @@ jobs:
           $installer = Get-ChildItem .tools\target\release\bundle\nsis\*-setup.exe | Select-Object -First 1
           if (-not $installer) { throw "没有找到 NSIS 安装包" }
           & .\tests\install-audit.ps1 -Installer $installer.FullName -WorkRoot (Join-Path (Get-Location) '.runtime\install-audit')
+      - name: Package versioned Windows release files
+        shell: powershell
+        run: .\scripts\package-release.ps1
+      - name: Archive versioned Windows release files
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: md-windows-${{ github.sha }}-${{ github.run_attempt }}
+          path: .runtime/release-artifacts/*
+          if-no-files-found: error
+          retention-days: 7
