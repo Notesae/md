@@ -74,6 +74,8 @@ let searchStart: number | null = null;
 let refreshTimer = 0;
 let scrollFrame = 0;
 let noticeTimer = 0;
+// 文章恢复时只清除已过期的文章提示，未保存状态及存储警告仍由用户确认。
+let noticeScope: "app" | "document" = "app";
 // 偏好写入串行，快速切换主题或字号时旧请求不能最后覆盖新设置。
 let preferences: PreferenceStore;
 let storageView: StorageSettings | null = null;
@@ -104,11 +106,19 @@ async function restoreReadingPosition(saved: ReadingPosition, ticket = request):
   }
 }
 
-function message(text: string, persistent = false): void {
+function message(text: string, persistent = false, scope: "app" | "document" = "app"): void {
+  noticeScope = scope;
   document.querySelector("#notice-text")!.textContent = text;
   document.querySelector<HTMLElement>("#notice")!.hidden = false;
   clearTimeout(noticeTimer);
   if (!persistent) noticeTimer = window.setTimeout(() => { document.querySelector<HTMLElement>("#notice")!.hidden = true; }, 5500);
+}
+
+/** 成功换文或关闭后收起旧文章提示，取消选择或打开失败不算恢复成功。 */
+function clearDocumentNotice(): void {
+  if (noticeScope !== "document") return;
+  clearTimeout(noticeTimer); noticeScope = "app";
+  document.querySelector<HTMLElement>("#notice")!.hidden = true;
 }
 
 const displayPath = (path: string) => path.replace(/^\\\\\?\\/, "");
@@ -271,6 +281,7 @@ async function openPath(path: string, restore?: ReadingPosition, kind: "open" | 
     if (ticket !== request) return;
     // 请求发出后用户仍可能进入设置；自动刷新不能改变当前页面，返回阅读后重新读取最新内容。
     if (kind === "refresh" && settingsOpen) { refreshOnReturn = true; return; }
+    clearDocumentNotice();
     // User Timing 供本机性能验收使用；记录有限数值，不保留路径或原文。
     const timing = { bytes: result.bytes, readMs: result.readMs, parseMs: result.parseMs, cacheMs: result.cacheMs, cacheHit: result.cacheHit, ipcMs: performance.now() - ipcStart };
     const saved = restore ?? session.state.recent.find((item) => item.path === result.path) ?? { position: 0, block: null, offset: 0, anchorHash: null };
@@ -297,12 +308,12 @@ async function openPath(path: string, restore?: ReadingPosition, kind: "open" | 
     await refreshSession(); if (ticket !== request) return;
     healthySessionRequest = ticket;
     renderRecent(); updateProgress();
-    if (result.cacheError) message(`应用缓存未写入，正文仍可阅读：${result.cacheError}`, true);
+    if (result.cacheError) message(`应用缓存未写入，正文仍可阅读：${result.cacheError}`, true, "document");
     if (!document.querySelector<HTMLElement>("#search-bar")!.hidden) reader.search(document.querySelector<HTMLInputElement>("#search-input")!.value);
     // 首屏绘制只用于计时；必要状态尚未恢复时不能授权后台清理迁移源。
     if (!settingsOpen) await restoreReadingPosition(saved, ticket);
   } catch (error) {
-    if (ticket === request) { restoringPosition = undefined; message(`无法打开文章：${String(error)}`, true); document.querySelector("#document-status")!.textContent = "打开失败，可重新选择文件"; }
+    if (ticket === request) { restoringPosition = undefined; message(`无法打开文章：${String(error)}`, true, "document"); document.querySelector("#document-status")!.textContent = "打开失败，可重新选择文件"; }
   } finally { if (ticket === request) { if (settingsOpen) restoringPosition = undefined; app.classList.remove("opening"); } }
 }
 
@@ -363,6 +374,7 @@ function closeDocument(): Promise<void> {
     if (ticket !== request) return;
     await invoke("close_document");
     if (ticket !== request) return;
+    clearDocumentNotice();
     if (settingsOpen) toggleSettings(false);
     clearTimeout(positionTimer); clearTimeout(searchTimer);
     searchStart = null; restoringPosition = undefined; settingsPosition = undefined; refreshOnReturn = false;
@@ -407,7 +419,7 @@ async function action(name: string): Promise<void> {
     else if (name === "dismiss-notice") document.querySelector<HTMLElement>("#notice")!.hidden = true;
     else if (name === "clear-history") { await invoke("clear_history"); await refreshSession(); renderRecent(); renderFolderView(); message("最近记录已清除，原始文章与偏好已保留。"); }
     else if (name === "close-document") await closeDocument();
-  } catch (error) { message(String(error), true); }
+  } catch (error) { message(String(error), true, name === "close-document" ? "document" : "app"); }
 }
 
 app.addEventListener("click", (event) => {
@@ -453,7 +465,7 @@ document.addEventListener("keydown", (event) => {
 });
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { if (session) applyPreferences(); });
 narrowLayout.addEventListener("change", () => { app.classList.remove("outline-drawer"); if (session) syncOutlineButton(); });
-reader.onMessage = message;
+reader.onMessage = (text) => message(text, false, "document");
 reader.onHeading = (id) => {
   const previous = document.querySelector<HTMLElement>('.outline-link[aria-current="location"]');
   previous?.classList.remove("active"); previous?.removeAttribute("aria-current");

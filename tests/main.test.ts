@@ -6,6 +6,7 @@ const native = vi.hoisted(() => ({
   invoke: vi.fn(), handlers: new Map<string, (event: { payload: string }) => void>(),
   show: vi.fn(), restore: vi.fn(), capture: vi.fn(), closeRequested: vi.fn(),
   search: vi.fn(), dispose: vi.fn(), title: vi.fn(),
+  reader: null as { onMessage: (text: string) => void } | null,
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke, isTauri: () => true }));
@@ -14,7 +15,8 @@ vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ setTitle: 
 vi.mock("../src/storage-settings", () => ({ StorageSettings: class { activate() {} deactivate() {} } }));
 // 只替换排版和原生边界；真实主窗口控制器、DOM 事件与异步打开流程参与测试。
 vi.mock("../src/reader", () => ({ Reader: class {
-  constructor(readonly article: HTMLElement, readonly viewport: HTMLElement) {}
+  onMessage = (_text: string) => {};
+  constructor(readonly article: HTMLElement, readonly viewport: HTMLElement) { native.reader = this; }
   capturePosition = native.capture;
   restorePosition = native.restore;
   search = native.search;
@@ -66,6 +68,7 @@ describe("关闭文章的页面与请求边界", () => {
     expect(native.dispose).not.toHaveBeenCalled();
     native.invoke.mockImplementation(original); close(); await settle();
     expect(settingsVisible()).toBe(false); expect(native.dispose).toHaveBeenCalledOnce();
+    expect(document.querySelector<HTMLElement>("#notice")!.hidden).toBe(true);
   });
 
   it("新文章等待已发出的关闭完成，迟到关闭不清空新文章", async () => {
@@ -175,6 +178,51 @@ beforeEach(async () => {
   native.invoke.mockImplementation(async (name: string) => name === "get_session" ? structuredClone(remoteSession) : name === "open_document" ? article(1) : null);
   await import("../src/main"); await settle();
   expect(native.show).toHaveBeenCalledTimes(1); native.restore.mockClear();
+});
+
+describe("文章错误提示的恢复边界", () => {
+  it("打开失败后重试成功，清除常驻的旧文章错误", async () => {
+    const original = native.invoke.getMockImplementation()!;
+    native.invoke.mockImplementation((name: string) => name === "open_document" ? Promise.reject(new Error("文件暂不可用")) : original(name));
+    native.handlers.get("open-path")!({ payload: path }); await settle(); await vi.advanceTimersByTimeAsync(6000);
+    expect(document.querySelector<HTMLElement>("#notice")!.hidden).toBe(false);
+    native.invoke.mockImplementation(original); native.handlers.get("open-path")!({ payload: path }); await settle();
+    expect(document.querySelector<HTMLElement>("#notice")!.hidden).toBe(true);
+    expect(document.querySelector("#document-status")!.textContent).not.toContain("打开失败");
+  });
+
+  it("取消选文件保留失败说明，关闭当前文章后不把旧错误带到欢迎页", async () => {
+    const original = native.invoke.getMockImplementation()!;
+    native.invoke.mockImplementation((name: string) => name === "open_document" ? Promise.reject(new Error("文件暂不可用")) : original(name));
+    native.handlers.get("open-path")!({ payload: path }); await settle();
+    document.querySelector<HTMLButtonElement>('[data-action="open"]')!.click(); await settle();
+    expect(document.querySelector<HTMLElement>("#notice")!.hidden).toBe(false);
+    document.querySelector<HTMLButtonElement>('[data-action="close-document"]')!.click(); await settle();
+    expect(document.querySelector<HTMLElement>("#welcome")!.hidden).toBe(false);
+    expect(document.querySelector<HTMLElement>("#notice")!.hidden).toBe(true);
+  });
+
+  it("重新打开文章后不继续显示上一篇的增强错误", async () => {
+    native.reader!.onMessage("旧文章增强暂不可用");
+    native.handlers.get("open-path")!({ payload: path }); await settle();
+    expect(document.querySelector<HTMLElement>("#notice")!.hidden).toBe(true);
+  });
+
+  it("新文章自己的增强错误仍然可见，不在渲染结束时误清除", async () => {
+    native.reader!.onMessage("旧文章增强暂不可用");
+    native.show.mockImplementationOnce(async () => { native.reader!.onMessage("本次增强仍不可用"); });
+    native.handlers.get("open-path")!({ payload: path }); await settle();
+    expect(document.querySelector<HTMLElement>("#notice")!.hidden).toBe(false);
+    expect(document.querySelector("#notice-text")!.textContent).toBe("本次增强仍不可用");
+  });
+
+  it("文章恢复不能清掉全局未保存警告，旧计时器也不能将其隐藏", async () => {
+    native.reader!.onMessage("旧文章增强暂不可用");
+    native.handlers.get("state-error")!({ payload: "磁盘不可写" });
+    native.handlers.get("open-path")!({ payload: path }); await settle(); await vi.advanceTimersByTimeAsync(6000);
+    expect(document.querySelector<HTMLElement>("#notice")!.hidden).toBe(false);
+    expect(document.querySelector("#notice-text")!.textContent).toContain("状态未保存：磁盘不可写");
+  });
 });
 
 const folders = ["H:\\文章", "H:\\其他目录"];
