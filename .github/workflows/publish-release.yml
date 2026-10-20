@@ -1,13 +1,22 @@
-name: Publish verified MD v0.1.2
+name: Publish verified MD prerelease
 
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag, such as v0.1.2
+        required: true
+        type: string
+      run_id:
+        description: Successful Quality push-to-main CI run ID
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: md-publish-v0.1.2
+  group: md-manual-publication
   cancel-in-progress: false
 
 jobs:
@@ -23,18 +32,20 @@ jobs:
         with:
           persist-credentials: false
       - name: Test publication guards without network or credentials
-        run: python3 -m unittest discover -s tests -p 'test_publish_v012.py' -v
-      - name: Publish only the pinned CI assets and verify fresh Release downloads
+        run: python3 -m unittest discover -s tests -p 'test_publish_release.py' -v
+      - name: Publish original verified CI assets and verify fresh Release downloads
         env:
           GH_TOKEN: ${{ github.token }}
           GH_PROMPT_DISABLED: '1'
           GH_NO_UPDATE_NOTIFIER: '1'
-        run: python3 scripts/publish_v012.py
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_RUN_ID: ${{ inputs.run_id }}
+        run: python3 scripts/publish_release.py
       - name: Retain publication state and verification evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: md-v0.1.2-publication-verification-${{ github.run_id }}-${{ github.run_attempt }}
-          path: .runtime/publish-v0.1.2/*.json
+          name: md-publication-verification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .runtime/publish-release/*.json
           if-no-files-found: warn
           retention-days: 7
