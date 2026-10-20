@@ -57,7 +57,7 @@ class MemoryGitHub:
         self.files = bundle(target)
         self.archive = zip_bytes(list(self.files.items()))
         self.target = t = replace(target, archive_bytes=len(self.archive), archive_sha=p.sha(self.archive))
-        self.repo = {'full_name': p.REPO, 'id': p.REPO_ID, 'private': True}
+        self.repo = {'full_name': p.REPO, 'id': p.REPO_ID, 'private': False}
         self.tag = {'ref': f'refs/tags/{t.tag}', 'object': {'sha': t.commit, 'type': 'commit'}}
         self.run = {'id': t.run, 'head_sha': t.commit, 'head_branch': 'main', 'event': 'push', 'status': 'completed',
                     'conclusion': 'success', 'path': '.github/workflows/check.yml', 'run_attempt': 1,
@@ -147,7 +147,7 @@ class SourceGuards(unittest.TestCase):
                 p.inputs(tag, run)
 
     def test_rejects_other_repository_tag_ci_version_and_artifact(self):
-        mutations = [lambda c: c.repo.update(private=False), lambda c: c.repo.update(id=1),
+        mutations = [lambda c: c.repo.update(private=True), lambda c: c.repo.update(id=1),
             lambda c: c.tag['object'].update(sha='0' * 40), lambda c: c.run.update(conclusion='failure'),
             lambda c: c.run.update(event='pull_request'), lambda c: c.run.update(head_sha='0' * 40),
             lambda c: c.run['head_repository'].update(id=1), lambda c: c.run.update(path='.github/workflows/other.yml'),

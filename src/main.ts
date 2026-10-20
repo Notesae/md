@@ -5,6 +5,7 @@ import type { DirectoryEntry, Preferences, ReaderDocument, ReadingPosition, Sess
 import { Reader } from "./reader";
 import { icon } from "./icons";
 import type { StorageSettings } from "./storage-settings";
+import type { UpdateSettings } from "./update-settings";
 import { PreferenceStore } from "./preferences";
 import "./styles.css";
 
@@ -39,6 +40,7 @@ app.innerHTML = `<div class="app-shell">
         <label class="setting-row"><span>正文字号</span><span class="range-setting"><input id="font-setting" type="range" min="14" max="28"><output id="font-value"></output></span></label>
         <label class="setting-row"><span>正文宽度</span><span class="range-setting"><input id="width-setting" type="range" min="560" max="1200" step="20"><output id="width-value"></output></span></label>
       </fieldset>
+      <fieldset><legend>应用更新</legend><div id="update-controls"></div></fieldset>
       <fieldset><legend>应用数据</legend><p class="setting-help">阅读记录、偏好和浏览器缓存使用以下位置。原始文章与附件保持原位。</p><p id="data-root" class="path-value"></p><div id="storage-controls"></div></fieldset>
       <fieldset><legend>阅读记录</legend><div class="setting-row"><span>最近文件和阅读进度<span class="setting-help">清除后不影响原始文章或阅读偏好</span></span><button class="secondary" data-action="clear-history">清除记录</button></div></fieldset>
       <p class="version" id="version"></p>
@@ -79,6 +81,7 @@ let noticeScope: "app" | "document" = "app";
 // 偏好写入串行，快速切换主题或字号时旧请求不能最后覆盖新设置。
 let preferences: PreferenceStore;
 let storageView: StorageSettings | null = null;
+let updateView: UpdateSettings | null = null;
 let readinessSent = false;
 // 会话读取与定位各有完成边界；设置切换或新请求会使旧定位失去健康确认资格。
 let healthySessionRequest = 0;
@@ -298,9 +301,10 @@ function renderOutline(): void {
 
 function position(): number { return Math.max(0, Math.min(1, pane.scrollTop / Math.max(1, pane.scrollHeight - pane.clientHeight))); }
 
-async function persistPosition(): Promise<void> {
-  if (!current || settingsOpen) return;
-  const path = current.path; const progress = restoringPosition ?? reader.capturePosition();
+// 设置页复用滚动区域；安装前使用进入设置时捕获的位置，不能读取设置页的滚动进度。
+async function persistPosition(captured?: ReadingPosition): Promise<void> {
+  if (!current || (settingsOpen && !captured)) return;
+  const path = current.path; const progress = captured ?? restoringPosition ?? reader.capturePosition();
   const item = session.state.recent.find((item) => item.path === path);
   if (!item || (item.position === progress.position && item.block === progress.block && item.offset === progress.offset)) return;
   await invoke("save_position", { path, ...progress });
@@ -383,8 +387,13 @@ function toggleSettings(refresh = true): void {
       storageView ??= new StorageSettings(document.querySelector<HTMLElement>("#storage-controls")!, () => preferences.snapshot, changePreferences, () => preferences.flush(), message);
       if (settingsOpen) void storageView.activate();
     }).catch((error) => message(`无法打开存储设置：${String(error)}`, true));
+    void import("./update-settings").then(({ UpdateSettings }) => {
+      updateView ??= new UpdateSettings(document.querySelector<HTMLElement>("#update-controls")!, async () => { await persistPosition(settingsPosition); await preferences.flush(); });
+      if (settingsOpen) void updateView.activate();
+    }).catch((error) => message(`无法打开更新设置：${String(error)}`, true));
   } else {
     storageView?.deactivate();
+    updateView?.deactivate();
     pane.focus({ preventScroll: true });
     const saved = settingsPosition; settingsPosition = undefined;
     if (refresh && refreshOnReturn && current) { refreshOnReturn = false; void openPath(current.path, saved, "refresh"); }
