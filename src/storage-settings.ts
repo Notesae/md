@@ -34,7 +34,7 @@ export class StorageSettings {
       <label class="setting-row"><span>应用缓存预算<span class="setting-help">只约束应用解析缓存，不包含浏览器数据</span></span><span class="budget-setting"><input id="cache-budget" type="number" min="0" max="2048" step="16" aria-label="应用缓存预算 MiB"> MiB</span></label>
       <div class="storage-actions"><button class="secondary" data-storage="cache">清理应用缓存…</button><button class="secondary" data-storage="webview">清理浏览器数据…</button></div>
       <div id="migration-residual" class="migration-residual" hidden><h3>待清理的旧数据</h3><p id="residual-path" class="path-value"></p><p id="residual-size" class="setting-help"></p><button class="secondary" data-storage="retry">重试清理</button></div>
-      <dialog id="maintenance-dialog" aria-labelledby="maintenance-title"><h2 id="maintenance-title"></h2><p id="maintenance-description"></p><p id="maintenance-target" class="path-value" hidden></p><p id="maintenance-status" role="status"></p><div class="dialog-actions"><button class="secondary" data-storage="cancel">取消</button><button class="primary" data-storage="confirm" id="maintenance-confirm"></button></div></dialog>`;
+      <dialog id="maintenance-dialog" aria-labelledby="maintenance-title" data-phase="ready" inert><h2 id="maintenance-title"></h2><p id="maintenance-description"></p><p id="maintenance-target" class="path-value" hidden></p><p id="maintenance-status" role="status"></p><div class="dialog-actions"><button class="secondary" data-storage="cancel" autofocus>取消</button><button class="primary" data-storage="confirm" id="maintenance-confirm"></button></div></dialog>`;
     container.addEventListener("click", (event) => {
       const button = (event.target as Element).closest<HTMLElement>("[data-storage]");
       if (button) void this.action(button.dataset.storage!).catch((error) => this.message(String(error), true));
@@ -83,6 +83,7 @@ export class StorageSettings {
     for (const action of ["migrate", "webview", "cache"]) this.container.querySelector<HTMLButtonElement>(`[data-storage="${action}"]`)!.disabled = !this.viewActive || this.choosing || !!this.operation;
     this.container.querySelector('[data-storage="migrate"]')!.textContent = this.choosing ? "正在选择…" : "更改位置…";
     this.container.querySelector<HTMLButtonElement>('[data-storage="cancel"]')!.disabled = this.operation?.committed ?? false;
+    this.container.querySelector("#maintenance-confirm")!.setAttribute("aria-busy", String(!!this.operation));
   }
 
   /** 撤销准备中的维护及暂存授权；清理串行完成后才允许选择新目标。 */
@@ -91,7 +92,9 @@ export class StorageSettings {
     const committed = this.operation?.committed;
     if (!committed) this.operation = null;
     this.maintenance = null; this.selectedTarget = null;
-    this.updateMaintenanceButtons(); this.container.querySelector<HTMLDialogElement>("#maintenance-dialog")!.close();
+    this.updateMaintenanceButtons();
+    const dialog = this.container.querySelector<HTMLDialogElement>("#maintenance-dialog")!;
+    dialog.inert = true; dialog.close();
     if (committed) return Promise.resolve();
     this.targetClear = this.targetClear.catch(() => {}).then(() => invoke<void>("cancel_storage_target"));
     return this.targetClear;
@@ -129,7 +132,8 @@ export class StorageSettings {
       }
       this.selectedTarget = path;
       this.maintenance = action as typeof this.maintenance;
-      target.hidden = !path; target.textContent = path; status.textContent = ""; status.dataset.error = "false"; confirm.disabled = false;
+      target.hidden = !path; target.textContent = path; status.textContent = "准备好后可确认，也可以取消。"; status.dataset.error = "false"; confirm.disabled = false;
+      dialog.dataset.phase = "ready"; dialog.inert = false;
       title.textContent = action === "migrate" ? "迁移应用数据" : action === "webview" ? "清理浏览器数据" : "清理应用缓存";
       description.textContent = action === "migrate" ? "保存阅读进度后，应用会关闭并重新启动。偏好和记录将迁移到以下位置，缓存重新生成，原始文章与附件保持原位。请避开同步盘和可拔出存储。" : action === "webview" ? `应用会关闭并重新启动，再清理约 ${bytes(this.info?.usage.webviewBytes ?? 0)} 的浏览器数据。阅读记录、偏好和原始文章保留。` : `将清理约 ${bytes(this.info?.usage.cacheBytes ?? 0)} 的应用解析缓存，下次打开时可重新生成。阅读记录、偏好和原始文章保留。`;
       confirm.textContent = action === "migrate" ? "迁移并重新启动" : action === "webview" ? "清理并重新启动" : "清理缓存";
@@ -139,21 +143,21 @@ export class StorageSettings {
     if (action === "confirm" && this.maintenance && dialog.open && !this.operation) {
       const kind = this.maintenance; const selectedTarget = this.selectedTarget; const epoch = this.maintenanceEpoch;
       const operation = { committed: false }; this.operation = operation;
-      confirm.disabled = true; status.textContent = "正在保存阅读设置，可取消…"; status.dataset.error = "false"; this.updateMaintenanceButtons();
+      confirm.disabled = true; status.textContent = "正在保存阅读设置，可取消…"; status.dataset.error = "false"; dialog.dataset.phase = "preparing"; this.updateMaintenanceButtons();
       let succeeded = false;
       try {
         await this.beforeMaintenance();
         if (!this.viewActive || epoch !== this.maintenanceEpoch || this.operation !== operation) return;
-        operation.committed = true; this.updateMaintenanceButtons(); status.textContent = kind === "cache" ? "正在清理…" : "正在准备重新启动…";
+        operation.committed = true; this.updateMaintenanceButtons(); dialog.dataset.phase = "working"; status.textContent = kind === "cache" ? "正在清理…" : "正在准备重新启动…";
         await invoke(kind === "migrate" ? "migrate_storage" : kind === "webview" ? "reset_webview" : "clear_cache", kind === "migrate" ? { target: selectedTarget } : {});
         succeeded = true;
         if (!this.viewActive || epoch !== this.maintenanceEpoch || this.operation !== operation) return;
         if (kind === "cache") {
-          this.maintenance = null; this.selectedTarget = null; this.operation = null; this.updateMaintenanceButtons(); dialog.close();
+          this.maintenance = null; this.selectedTarget = null; this.operation = null; this.updateMaintenanceButtons(); dialog.inert = true; dialog.close();
           this.message("应用缓存已清理，阅读状态已保留。"); await this.activate();
         }
       } catch (error) {
-        if (this.viewActive && epoch === this.maintenanceEpoch && this.operation === operation) { confirm.disabled = false; status.textContent = `操作未完成：${String(error)}`; status.dataset.error = "true"; }
+        if (this.viewActive && epoch === this.maintenanceEpoch && this.operation === operation) { confirm.disabled = false; status.textContent = `操作未完成：${String(error)}`; status.dataset.error = "true"; dialog.dataset.phase = "error"; }
       } finally {
         if (this.operation === operation && (!succeeded || kind === "cache")) { this.operation = null; this.updateMaintenanceButtons(); }
       }

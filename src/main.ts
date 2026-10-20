@@ -16,11 +16,11 @@ app.innerHTML = `<div class="app-shell">
     <div class="open-actions"><button class="primary" data-action="open">${icon("file")}<span>打开文件</span></button><button class="icon-button" data-action="folder" title="打开文件夹 · Ctrl+Shift+O" aria-label="打开文件夹">${icon("folder")}</button></div>
     <div class="document-name"><span id="document-name">开始阅读</span><span id="document-description">本地 Markdown</span></div>
     <nav class="view-actions" aria-label="阅读工具">
-      <button class="icon-button" data-action="search" title="搜索正文 · Ctrl+F" aria-label="搜索正文" disabled>${icon("search")}</button>
+      <button class="icon-button" data-action="search" title="搜索正文 · Ctrl+F" aria-label="搜索正文" aria-controls="search-bar" aria-expanded="false" disabled>${icon("search")}</button>
       <button class="icon-button" data-action="sidebar" title="文件侧栏" aria-label="切换文件侧栏">${icon("sidebar")}</button>
-      <button class="icon-button" data-action="outline" title="文章目录" aria-label="切换文章目录">${icon("outline")}</button>
+      <button class="icon-button" data-action="outline" title="文章目录" aria-label="切换文章目录" aria-controls="outline-panel">${icon("outline")}</button>
       <button class="icon-button" data-action="theme" title="切换主题" aria-label="切换主题">${icon("moon")}</button>
-      <button class="icon-button" data-action="settings" title="设置" aria-label="打开设置">${icon("settings")}</button>
+      <button class="icon-button" data-action="settings" title="设置" aria-label="打开设置" aria-controls="settings" aria-expanded="false">${icon("settings")}</button>
     </nav>
   </header>
   <aside class="sidebar" aria-label="文件导航">
@@ -29,7 +29,7 @@ app.innerHTML = `<div class="app-shell">
     <div class="sidebar-bottom">原文只读，安心阅读。</div>
   </aside>
   <main class="reading-pane" id="reading-pane" tabindex="0" aria-label="正文阅读区">
-    <div class="search-bar" id="search-bar" hidden><label for="search-input">${icon("search")}<span class="sr-only">搜索正文</span></label><input id="search-input" type="search" placeholder="查找这篇文章…" autocomplete="off"><span id="search-count" role="status"></span><button class="icon-button small" data-action="previous-match" aria-label="上一个结果">${icon("previous")}</button><button class="icon-button small" data-action="next-match" aria-label="下一个结果">${icon("next")}</button><button class="icon-button small" data-action="close-search" aria-label="关闭搜索">${icon("close")}</button></div>
+    <div class="search-bar" id="search-bar" hidden inert><div class="search-controls" role="search"><label for="search-input">${icon("search")}<span class="sr-only">搜索正文</span></label><input id="search-input" type="search" placeholder="查找这篇文章…" autocomplete="off"><span id="search-count" role="status"></span><button class="icon-button small" data-action="previous-match" aria-label="上一个结果" disabled>${icon("previous")}</button><button class="icon-button small" data-action="next-match" aria-label="下一个结果" disabled>${icon("next")}</button><button class="icon-button small" data-action="close-search" aria-label="关闭搜索">${icon("close")}</button></div></div>
     <div class="welcome-view" id="welcome"><div class="welcome-book">${icon("book")}</div><h1>留一点时间，<br>给阅读。</h1><p>从一篇 Markdown 开始。<br>文字留在原处，目光回到此刻。</p><button class="primary large" data-action="open">${icon("file")}打开一篇文章<kbd>Ctrl O</kbd></button><div class="welcome-hint">也可以拖入文件，或<button class="text-button" data-action="folder">打开文件夹</button></div></div>
     <article class="prose" id="article" hidden></article>
     <div class="document-end" id="document-end" hidden><span></span>读到这里，刚刚好。<span></span><button class="text-button" data-action="top">回到开头</button></div>
@@ -44,9 +44,9 @@ app.innerHTML = `<div class="app-shell">
       <p class="version" id="version"></p>
     </section>
   </main>
-  <aside class="outline" aria-label="文章目录"><div class="section-title"><h2>文章目录</h2><span id="heading-count"></span></div><nav id="outline-list"><p class="empty-small">打开文章后，<br>在这里找到方向。</p></nav><div class="outline-bottom"><span>阅读进度</span><span id="read-progress">—</span><div class="progress-track"><div id="progress-fill"></div></div></div></aside>
+  <aside class="outline" id="outline-panel" tabindex="-1" aria-label="文章目录"><div class="section-title"><h2>文章目录</h2><span id="heading-count"></span></div><nav id="outline-list"><p class="empty-small">打开文章后，<br>在这里找到方向。</p></nav><div class="outline-bottom"><span>阅读进度</span><span id="read-progress">—</span><div class="progress-track"><div id="progress-fill"></div></div></div></aside>
   <footer class="statusbar"><span class="status-left">本地文件<span class="status-dot"></span>只读</span><span id="document-status">准备好开始阅读</span><button class="text-button" id="close-document" data-action="close-document" hidden>关闭文章</button></footer>
-  <div class="notice" id="notice" role="status" hidden><span id="notice-text"></span><button class="icon-button small" data-action="dismiss-notice" aria-label="关闭提示">${icon("close")}</button></div>
+  <div class="notice" id="notice" role="status" hidden inert><span id="notice-text"></span><button class="icon-button small" data-action="dismiss-notice" aria-label="关闭提示">${icon("close")}</button></div>
 </div>`;
 
 const pane = document.querySelector<HTMLElement>("#reading-pane")!;
@@ -110,15 +110,24 @@ function message(text: string, persistent = false, scope: "app" | "document" = "
   noticeScope = scope;
   document.querySelector("#notice-text")!.textContent = text;
   document.querySelector<HTMLElement>("#notice")!.hidden = false;
+  document.querySelector<HTMLElement>("#notice")!.inert = false;
   clearTimeout(noticeTimer);
-  if (!persistent) noticeTimer = window.setTimeout(() => { document.querySelector<HTMLElement>("#notice")!.hidden = true; }, 5500);
+  if (!persistent) noticeTimer = window.setTimeout(hideNotice, 5500);
+}
+
+/** 视觉退场交给 CSS；焦点与隐藏语义立即生效，不等待动画回调。 */
+function hideNotice(): void {
+  const notice = document.querySelector<HTMLElement>("#notice")!;
+  if (notice.contains(document.activeElement)) pane.focus({ preventScroll: true });
+  notice.hidden = true;
+  notice.inert = true;
 }
 
 /** 成功换文或关闭后收起旧文章提示，取消选择或打开失败不算恢复成功。 */
 function clearDocumentNotice(): void {
   if (noticeScope !== "document") return;
   clearTimeout(noticeTimer); noticeScope = "app";
-  document.querySelector<HTMLElement>("#notice")!.hidden = true;
+  hideNotice();
 }
 
 const displayPath = (path: string) => path.replace(/^\\\\\?\\/, "");
@@ -146,7 +155,12 @@ function applyPreferences(): void {
 /** 小窗口使用临时目录抽屉，按钮反映实际可见性，桌面目录偏好仍单独保留。 */
 function syncOutlineButton(): void {
   if (!preferences) return;
-  document.querySelector('[data-action="outline"]')!.setAttribute("aria-pressed", String(narrowLayout.matches ? app.classList.contains("outline-drawer") : preferences.snapshot.outline));
+  const visible = !settingsOpen && (narrowLayout.matches ? app.classList.contains("outline-drawer") : preferences.snapshot.outline);
+  const button = document.querySelector<HTMLButtonElement>('[data-action="outline"]')!;
+  button.setAttribute("aria-pressed", String(visible)); button.setAttribute("aria-expanded", String(visible));
+  const panel = document.querySelector<HTMLElement>("#outline-panel")!;
+  if (!visible && panel.contains(document.activeElement)) button.focus({ preventScroll: true });
+  panel.inert = !visible;
 }
 
 /** 合并滑块写入；失败提示持久化状态，不能伪装保存成功。 */
@@ -246,7 +260,10 @@ function renderOutline(): void {
   for (const heading of current?.headings ?? []) {
     const button = document.createElement("button"); button.type = "button"; button.className = "outline-link"; button.textContent = heading.title; button.title = heading.title;
     button.style.setProperty("--level", String(Math.min(heading.level - 1, 3))); button.dataset.heading = heading.id;
-    button.onclick = () => { void reader.jumpHeading(heading.id); }; list.append(button);
+    button.onclick = () => {
+      if (narrowLayout.matches) { app.classList.remove("outline-drawer"); syncOutlineButton(); pane.focus({ preventScroll: true }); }
+      void reader.jumpHeading(heading.id);
+    }; list.append(button);
   }
   if (!current?.headings.length) list.innerHTML = current
     ? '<p class="empty-small">这篇文章没有标题目录。</p>'
@@ -329,6 +346,7 @@ function toggleSettings(refresh = true): void {
   positionEpoch++;
   if (!settingsOpen) settingsPosition = current ? restoringPosition ?? reader.capturePosition() : undefined;
   settingsOpen = !settingsOpen; app.classList.toggle("settings-open", settingsOpen);
+  document.querySelector('[data-action="settings"]')!.setAttribute("aria-expanded", String(settingsOpen));
   document.querySelector<HTMLElement>("#settings")!.hidden = !settingsOpen; reader.article.hidden = settingsOpen || !current;
   document.querySelector<HTMLElement>("#welcome")!.hidden = settingsOpen || !!current;
   document.querySelector<HTMLElement>("#document-end")!.hidden = settingsOpen || !current;
@@ -349,12 +367,18 @@ function toggleSettings(refresh = true): void {
         .catch((error) => message(`阅读位置恢复失败：${String(error)}`, true));
     }
   }
+  syncOutlineButton();
+  const searchBar = document.querySelector<HTMLElement>("#search-bar")!;
+  searchBar.inert = settingsOpen || searchBar.hidden;
+  document.querySelector('[data-action="search"]')!.setAttribute("aria-expanded", String(!searchBar.inert));
 }
 
 function toggleSearch(show: boolean): void {
   if (show && !current) return;
   clearTimeout(searchTimer); searchStart = null;
-  document.querySelector<HTMLElement>("#search-bar")!.hidden = !show;
+  const bar = document.querySelector<HTMLElement>("#search-bar")!;
+  bar.hidden = !show; bar.inert = !show;
+  document.querySelector('[data-action="search"]')!.setAttribute("aria-expanded", String(show));
   const input = document.querySelector<HTMLInputElement>("#search-input")!;
   if (show) { if (settingsOpen) toggleSettings(); reader.search(input.value); input.focus(); input.select(); }
   else { reader.search(""); document.querySelector("#search-count")!.textContent = ""; pane.focus({ preventScroll: true }); }
@@ -381,6 +405,8 @@ function closeDocument(): Promise<void> {
     const input = document.querySelector<HTMLInputElement>("#search-input")!;
     input.value = ""; reader.search(""); reader.dispose(); reader.article.replaceChildren(); current = null;
     document.querySelector<HTMLElement>("#search-bar")!.hidden = true;
+    document.querySelector<HTMLElement>("#search-bar")!.inert = true;
+    document.querySelector('[data-action="search"]')!.setAttribute("aria-expanded", "false");
     document.querySelector("#search-count")!.textContent = "";
     app.classList.remove("opening", "outline-drawer");
     syncOutlineButton(); document.querySelector<HTMLButtonElement>('[data-action="search"]')!.disabled = true;
@@ -409,14 +435,16 @@ async function action(name: string): Promise<void> {
     else if (name === "next-match") reader.jumpMatch(1);
     else if (name === "sidebar") changePreferences({ sidebar: !preferences.snapshot.sidebar });
     else if (name === "outline") {
+      if (settingsOpen) toggleSettings();
       if (narrowLayout.matches) {
         app.classList.toggle("outline-drawer"); syncOutlineButton();
+        if (app.classList.contains("outline-drawer")) (document.querySelector<HTMLElement>('.outline-link[aria-current="location"]') ?? document.querySelector<HTMLElement>(".outline-link") ?? document.querySelector<HTMLElement>("#outline-panel"))!.focus({ preventScroll: true });
       } else changePreferences({ outline: !preferences.snapshot.outline });
     }
     else if (name === "theme") changePreferences({ theme: document.documentElement.dataset.theme === "dark" ? "light" : "dark" });
     else if (name === "settings") { if (!settingsOpen) await persistPosition(); toggleSettings(); }
     else if (name === "top") pane.scrollTo({ top: 0 });
-    else if (name === "dismiss-notice") document.querySelector<HTMLElement>("#notice")!.hidden = true;
+    else if (name === "dismiss-notice") hideNotice();
     else if (name === "clear-history") { await invoke("clear_history"); await refreshSession(); renderRecent(); renderFolderView(); message("最近记录已清除，原始文章与偏好已保留。"); }
     else if (name === "close-document") await closeDocument();
   } catch (error) { message(String(error), true, name === "close-document" ? "document" : "app"); }
@@ -460,7 +488,13 @@ document.addEventListener("keydown", (event) => {
   if (event.ctrlKey && event.key.toLowerCase() === "o") { event.preventDefault(); void action(event.shiftKey ? "folder" : "open"); }
   if (event.ctrlKey && event.key.toLowerCase() === "f") { event.preventDefault(); toggleSearch(true); }
   if (event.ctrlKey && event.key.toLowerCase() === "w") { event.preventDefault(); void action("close-document"); }
-  if (event.key === "Escape") { app.classList.remove("outline-drawer"); syncOutlineButton(); if (settingsOpen) toggleSettings(); else toggleSearch(false); }
+  if (event.key === "Escape") {
+    if (app.classList.contains("outline-drawer")) {
+      app.classList.remove("outline-drawer"); syncOutlineButton();
+      document.querySelector<HTMLElement>('[data-action="outline"]')!.focus({ preventScroll: true });
+    } else if (settingsOpen) toggleSettings();
+    else if (!document.querySelector<HTMLElement>("#search-bar")!.hidden) toggleSearch(false);
+  }
   if (event.key === "F5" && current) { event.preventDefault(); if (settingsOpen) refreshOnReturn = true; else void openPath(current.path, reader.capturePosition(), "refresh"); }
 });
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { if (session) applyPreferences(); });
@@ -474,6 +508,7 @@ reader.onHeading = (id) => {
 };
 reader.onSearch = (count, index, truncated) => {
   document.querySelector("#search-count")!.textContent = !document.querySelector<HTMLInputElement>("#search-input")!.value ? "" : count ? `${index + 1} / ${count}${truncated ? "+" : ""}` : "无匹配";
+  for (const action of ["previous-match", "next-match"]) document.querySelector<HTMLButtonElement>(`[data-action="${action}"]`)!.disabled = count === 0;
   const start = searchStart;
   if (start !== null) requestAnimationFrame(() => requestAnimationFrame(() => {
     if (searchStart !== start) return;

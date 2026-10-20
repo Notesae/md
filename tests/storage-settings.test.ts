@@ -28,6 +28,28 @@ beforeEach(async () => {
 afterEach(() => { vi.restoreAllMocks(); });
 
 describe("存储维护的异步确认边界", () => {
+  it("维护状态按准备、执行、失败及重试推进，忙碌标记和可交互状态同时恢复", async () => {
+    const saving = deferred<void>(); beforeMaintenance.mockReturnValueOnce(saving.promise);
+    let fail!: (error: Error) => void; const cleaning = new Promise<void>((_, reject) => { fail = reject; });
+    const original = native.invoke.getMockImplementation()!; let attempts = 0;
+    native.invoke.mockImplementation(name => name === "clear_cache" && ++attempts === 1 ? cleaning : original(name));
+    click("cache"); await settle(); expect(dialog().dataset.phase).toBe("ready"); expect(dialog().inert).toBe(false);
+    click("confirm"); await settle(); expect(dialog().dataset.phase).toBe("preparing");
+    expect(container.querySelector("#maintenance-confirm")!.getAttribute("aria-busy")).toBe("true");
+    saving.resolve(); await settle(); expect(dialog().dataset.phase).toBe("working");
+    fail(new Error("清理失败")); await settle(); expect(dialog().dataset.phase).toBe("error");
+    expect(container.querySelector("#maintenance-confirm")!.getAttribute("aria-busy")).toBe("false");
+    click("confirm"); await settle(); expect(dialog().open).toBe(false); expect(dialog().inert).toBe(true); expect(attempts).toBe(2);
+  });
+
+  it("取消准备后立即重开，旧保存完成不能关闭或提交新确认", async () => {
+    const saving = deferred<void>(); beforeMaintenance.mockReturnValueOnce(saving.promise);
+    click("cache"); await settle(); click("confirm"); await settle(); click("cancel"); await settle();
+    expect(dialog().inert).toBe(true); click("cache"); await settle(); saving.resolve(); await settle();
+    expect(dialog().open).toBe(true); expect(dialog().inert).toBe(false); expect(dialog().dataset.phase).toBe("ready");
+    expect(calls("clear_cache")).toHaveLength(0);
+    click("confirm"); await settle(); expect(calls("clear_cache")).toHaveLength(1); expect(dialog().open).toBe(false);
+  });
   it("选择目录返回前离开设置，迟到选择不能打开隐藏页面的确认框", async () => {
     const choosing = deferred<string | null>(); const original = native.invoke.getMockImplementation()!;
     native.invoke.mockImplementation((name: string) => name === "choose_storage_target" ? choosing.promise : original(name));

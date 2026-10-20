@@ -253,10 +253,28 @@ describe("阅读工具的焦点与可见状态", () => {
   const outline = () => document.querySelector<HTMLButtonElement>('[data-action="outline"]')!;
   const drawerVisible = () => document.querySelector("#app")!.classList.contains("outline-drawer");
 
+  it("目录退场立即退出键盘路径，Escape 返回触发按钮，反复开关保留最终意图", async () => {
+    narrowViewport.matches = true; narrowViewport.addEventListener.mock.calls[0][1]();
+    const panel = document.querySelector<HTMLElement>("#outline-panel")!;
+    for (let count = 0; count < 12; count++) {
+      outline().click(); expect(panel.inert).toBe(false);
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      expect(panel.inert).toBe(true); expect(document.activeElement).toBe(outline());
+    }
+    outline().click(); await vi.advanceTimersByTimeAsync(250);
+    expect(panel.inert).toBe(false); expect(outline().getAttribute("aria-expanded")).toBe("true"); expect(drawerVisible()).toBe(true);
+    narrowViewport.matches = false; narrowViewport.addEventListener.mock.calls[0][1](); outline().click();
+    narrowViewport.matches = true; narrowViewport.addEventListener.mock.calls[0][1](); outline().click();
+    narrowViewport.matches = false; narrowViewport.addEventListener.mock.calls[0][1]();
+    expect(panel.inert).toBe(true); expect(document.activeElement).toBe(outline());
+  });
+
   it("返回阅读后键盘焦点落在阅读区，保持原锚点", async () => {
     clickSettings(); await settle(); expect(document.activeElement?.id).toBe("settings-title");
+    expect(document.querySelector('[data-action="settings"]')!.getAttribute("aria-expanded")).toBe("true");
     document.querySelector<HTMLButtonElement>('.back-button')!.click(); await settle();
     expect(document.activeElement?.id).toBe("reading-pane");
+    expect(document.querySelector('[data-action="settings"]')!.getAttribute("aria-expanded")).toBe("false");
     expect(native.restore).toHaveBeenLastCalledWith(anchor);
   });
 
@@ -270,6 +288,8 @@ describe("阅读工具的焦点与可见状态", () => {
     outline().click(); clickSettings(); await settle();
     expect(drawerVisible()).toBe(false); expect(outline().getAttribute("aria-pressed")).toBe("false");
     narrowViewport.matches = false; changedLayout();
+    expect(outline().getAttribute("aria-pressed")).toBe("false");
+    document.querySelector<HTMLButtonElement>('.back-button')!.click(); await settle();
     expect(outline().getAttribute("aria-pressed")).toBe("true");
     expect(native.invoke.mock.calls.filter(([name]) => name === "save_preferences")).toHaveLength(0);
   });
@@ -306,6 +326,20 @@ describe("搜索的显示与输入合并", () => {
   const search = () => document.querySelector<HTMLButtonElement>('[data-action="search"]')!.click();
   const closeSearch = () => document.querySelector<HTMLButtonElement>('[data-action="close-search"]')!.click();
   const input = () => document.querySelector<HTMLInputElement>("#search-input")!;
+
+  it("快速开关立即更新隐藏语义和焦点，设置返回也反映实际搜索状态", async () => {
+    const bar = document.querySelector<HTMLElement>("#search-bar")!;
+    const trigger = document.querySelector('[data-action="search"]')!;
+    for (let count = 0; count < 12; count++) { search(); closeSearch(); }
+    search(); expect(bar.hidden).toBe(false); expect(bar.inert).toBe(false);
+    expect(trigger.getAttribute("aria-expanded")).toBe("true"); expect(document.activeElement).toBe(input());
+    clickSettings(); await settle(); expect(bar.inert).toBe(true); expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    document.querySelector<HTMLButtonElement>('.back-button')!.click(); await settle();
+    expect(bar.inert).toBe(false); expect(trigger.getAttribute("aria-expanded")).toBe("true");
+    closeSearch(); expect(bar.hidden).toBe(true); expect(bar.inert).toBe(true);
+    expect(document.activeElement?.id).toBe("reading-pane");
+    await vi.advanceTimersByTimeAsync(250); expect(bar.hidden).toBe(true);
+  });
 
   it("关闭时移除旧结果提示，重新打开后用保留的搜索词恢复结果", async () => {
     search(); input().value = "阅读"; input().dispatchEvent(new Event("input", { bubbles: true }));
