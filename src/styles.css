@@ -1,5 +1,5 @@
 /* 主题令牌同时服务正文、原生风格控件和搜索，使用本地字体保证离线启动。 */
-:root { color-scheme: light; --paper: #fbfaf6; --panel: #f0efe8; --surface: #e7e9df; --ink: #283a30; --muted: #667268; --line: #daddd1; --accent: #2d6249; --accent-soft: #e0e9dc; --code: #eeefe7; --danger: #953d31; --body-size: 18px; --body-width: 780px; font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif; font-size: 13px; color: var(--ink); background: var(--paper); }
+:root { color-scheme: light; --paper: #fbfaf6; --panel: #f0efe8; --surface: #e7e9df; --ink: #283a30; --muted: #616e64; --line: #daddd1; --accent: #2d6249; --accent-soft: #e0e9dc; --code: #eeefe7; --danger: #953d31; --body-size: 18px; --body-width: 780px; font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif; font-size: 13px; color: var(--ink); background: var(--paper); }
 :root[data-theme="dark"] { color-scheme: dark; --paper: #1b2420; --panel: #202b24; --surface: #2e3b31; --ink: #e1e7d9; --muted: #a9b8aa; --line: #38473b; --accent: #a4ccac; --accent-soft: #2d4533; --code: #222e26; --danger: #f2a295; }
 /* 状态反馈、弹层和目录共享节奏；正文与主题整页不做入场动画。 */
 :root { --motion-feedback: 120ms; --motion-enter: 140ms; --motion-exit: 90ms; --motion-drawer: 160ms; --ease-enter: cubic-bezier(.16, 1, .3, 1); --ease-exit: ease-in; }
