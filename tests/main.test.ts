@@ -236,6 +236,24 @@ describe("阅读工具的焦点与可见状态", () => {
   });
 });
 
+describe("维护确认期间的快捷键边界", () => {
+  it("模态确认接管 Escape，后台阅读和文件快捷键不越过确认框", async () => {
+    clickSettings(); await settle();
+    const modal = document.createElement("dialog"); modal.open = true; document.body.append(modal);
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(settingsVisible()).toBe(true);
+    for (const key of ["o", "f", "w", "F5"]) {
+      const event = new KeyboardEvent("keydown", { key, ctrlKey: key !== "F5", cancelable: true, bubbles: true });
+      document.dispatchEvent(event); expect(event.defaultPrevented).toBe(true);
+    }
+    await settle(); expect(callsFor("pick_file")).toBe(0); expect(callsFor("close_document")).toBe(0);
+    expect(document.querySelector<HTMLElement>("#search-bar")!.hidden).toBe(true);
+    modal.open = false; document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); await settle();
+    expect(settingsVisible()).toBe(false); expect(opens()).toHaveLength(1);
+  });
+  const callsFor = (command: string) => native.invoke.mock.calls.filter(([name]) => name === command).length;
+});
+
 describe("搜索的显示与输入合并", () => {
   const search = () => document.querySelector<HTMLButtonElement>('[data-action="search"]')!.click();
   const closeSearch = () => document.querySelector<HTMLButtonElement>('[data-action="close-search"]')!.click();

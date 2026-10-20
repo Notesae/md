@@ -440,6 +440,11 @@ reader.article.addEventListener("contentvisibilityautostatechange", () => {
   if (!scrollFrame) scrollFrame = requestAnimationFrame(() => { updateProgress(); scrollFrame = 0; });
 }, true);
 document.addEventListener("keydown", (event) => {
+  // 模态确认使用自己的 Escape 和焦点规则，后台快捷键不能关闭设置或打开其他页面。
+  if (document.querySelector("dialog[open]")) {
+    if ((event.ctrlKey && ["o", "f", "w"].includes(event.key.toLowerCase())) || event.key === "F5") event.preventDefault();
+    return;
+  }
   if (event.ctrlKey && event.key.toLowerCase() === "o") { event.preventDefault(); void action(event.shiftKey ? "folder" : "open"); }
   if (event.ctrlKey && event.key.toLowerCase() === "f") { event.preventDefault(); toggleSearch(true); }
   if (event.ctrlKey && event.key.toLowerCase() === "w") { event.preventDefault(); void action("close-document"); }
