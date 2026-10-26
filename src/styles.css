@@ -37,10 +37,12 @@ input::placeholder { color: var(--muted); opacity: 1; }
 .primary:active:not(:disabled), .secondary:active:not(:disabled), .icon-button:active:not(:disabled) { background: var(--accent-soft); color: var(--accent); }
 .icon-button { width: 36px; height: 36px; padding: 7px; flex-shrink: 0; color: var(--muted); }
 .icon-button[aria-pressed="true"], .icon-button[aria-expanded="true"] { color: var(--accent); background: var(--accent-soft); }
-.toolbar .open-file { min-height: 32px; padding: 5px 10px; border-color: transparent; background: var(--panel); font-size: 12px; }
-.toolbar .open-file:hover { border-color: var(--line); background: var(--surface); }
-.toolbar .icon-button { width: 32px; height: 32px; min-height: 32px; padding: 7px; }
-.toolbar .open-file svg, .toolbar .icon-button svg { width: 18px; height: 18px; }
+/* 打开入口与阅读工具共享图标尺寸和反馈，已选中的工具在悬停时仍保留墨绿底色。 */
+.toolbar .open-file { min-height: 32px; padding: 5px 10px; border-color: transparent; background: transparent; color: var(--muted); font-size: 12px; }
+.toolbar .icon-button { width: 32px; height: 32px; min-height: 32px; padding: 6px; }
+.toolbar .open-file svg, .toolbar .icon-button svg { width: 20px; height: 20px; }
+.toolbar :is(.open-file, .icon-button):hover:not(:disabled) { background: var(--surface); color: var(--accent); }
+.toolbar :is(.open-file, .icon-button):is(:active, [aria-pressed="true"], [aria-expanded="true"]):not(:disabled) { background: var(--accent-soft); color: var(--accent); }
 .view-actions { flex-shrink: 0; gap: 4px; }
 /* 窗口按钮贴右边缘并独立于拖动区域，关闭按钮使用 Windows 熟悉的悬停反馈。 */
 .window-actions { display: flex; align-self: stretch; flex-shrink: 0; }

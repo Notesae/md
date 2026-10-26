@@ -116,3 +116,11 @@
 - `npm run build`（TypeScript 与 Vite）、Rust 格式检查、`git diff --check` 通过；界面静态检测返回空问题列表。新增模态兼容逻辑通过 DOM 回归测试，未以真实窗口验证。
 - `npm run build:desktop -- --no-bundle -- --locked --offline` 通过，Tauri 已将最新前端资源打入 `.tools/target/release/md-reader.exe`；未生成或验证安装包，未启动该程序。
 - 遵守桌面交互测试暂停要求：没有启动或关闭应用窗口，没有鼠标、键盘、焦点、原生对话框、剪贴板、全局热键或屏幕捕获操作。原生拖动、双击最大化、缩放、多 DPI 与确认框的实际视觉效果仍未验证；这些后台结果不能替代桌面或性能验收。
+
+## 2026-10-26 工具按钮图标统一
+
+- 重绘文件、文件夹、搜索、侧栏、目录、设置及太阳／月亮图标，统一为 20px 画布与 1.5px 圆角描边，校正轮廓比例和中心。最近文件、目录树与主题切换复用同一套图标，没有增加依赖。
+- 顶栏按钮统一图标尺寸、默认墨色和悬停反馈；按下、展开或选中时使用现有绿色强调，悬停不会覆盖选中状态。原有按钮语义和动作保持不变。
+- `node node_modules/vitest/vitest.mjs run tests/main.test.ts tests/reader-resources.test.ts`：60 项通过；TypeScript 与 Vite 构建、差异检查通过，界面静态检测返回空问题列表。
+- `npm run build:desktop -- --no-bundle -- --locked --offline` 通过，已将本次图标与样式更新打入 `.tools/target/release/md-reader.exe`，未启动程序。
+- 本次为 SVG 与 CSS 调整，未新增镜像样式实现的测试；没有操作桌面或截图，实际显示与不同 DPI 下的观感未验证。

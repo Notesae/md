@@ -1,11 +1,11 @@
-// 统一 20px、1.6px 描边的操作图标；不把用户或文档内容插入 SVG。
+// 操作图标统一使用 20px 画布、1.5px 描边与圆角线端；文件、导航和外观图标按中心对齐。
 const paths: Record<string, string> = {
-  file: '<path d="M11 2H4v16h12V7zM11 2v5h5M7 11h6M7 14h6"/>',
-  folder: '<path d="M2 5h6l2 2h8v10H2zM2 5V3h6l2 2h6v2"/>',
-  search: '<circle cx="8.5" cy="8.5" r="5.5"/><path d="m13 13 4 4"/>',
-  settings: '<path d="m8 2-.8 2.1-2.2.3-1.5 2.6.9 2-.9 2 1.5 2.6 2.2.3L8 16h3l.8-2.1 2.2-.3 1.5-2.6-.9-2 .9-2L14 4.4l-2.2-.3L11 2Z"/><circle cx="9.5" cy="9" r="2.5"/>',
-  sidebar: '<rect x="2" y="3" width="16" height="14" rx="2"/><path d="M7 3v14"/>',
-  outline: '<path d="M7 4h10M7 10h10M7 16h10M3 4h.1M3 10h.1M3 16h.1"/>',
+  file: '<path d="M11.5 3H5a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V7.5Z"/><path d="M11.5 3v4.5H16M7 11h6M7 14h4"/>',
+  folder: '<path d="M3 6v-.5A1.5 1.5 0 0 1 4.5 4H8l2 2h5.5A1.5 1.5 0 0 1 17 7.5v7a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 3 14.5Z"/>',
+  search: '<circle cx="9" cy="9" r="5.5"/><path d="m13 13 4 4"/>',
+  settings: '<path d="M8.5 3h3l.5 1.8 1.2.7L15 5l1.5 2.6-1.3 1.3v2.2l1.3 1.3L15 15l-1.8-.5-1.2.7-.5 1.8h-3L8 15.2l-1.2-.7L5 15l-1.5-2.6 1.3-1.3V8.9L3.5 7.6 5 5l1.8.5L8 4.8Z"/><circle cx="10" cy="10" r="2.5"/>',
+  sidebar: '<rect x="3" y="4" width="14" height="12" rx="1.5"/><path d="M7.5 4v12"/>',
+  outline: '<path d="M3 4h.01M7 4h10M3 10h.01M7 10h10M3 16h.01M7 16h10"/>',
   chevron: '<path d="m7 5 5 5-5 5"/>',
   close: '<path d="m5 5 10 10M15 5 5 15"/>',
   // 窗口控件沿用同一描边图标，最大化后以重叠方框表示还原。
@@ -14,13 +14,13 @@ const paths: Record<string, string> = {
   restore: '<path d="M7 6V3h10v10h-3"/><rect x="3" y="7" width="10" height="10"/>',
   previous: '<path d="m12 5-5 5 5 5"/>',
   next: '<path d="m8 5 5 5-5 5"/>',
-  sun: '<circle cx="10" cy="10" r="3.5"/><path d="M10 1v2m0 14v2M1 10h2m14 0h2M3.5 3.5 5 5m10 10 1.5 1.5M3.5 16.5 5 15M15 5l1.5-1.5"/>',
-  moon: '<path d="M17 12.5A7.5 7.5 0 0 1 7.5 3 7.5 7.5 0 1 0 17 12.5Z"/>',
+  sun: '<circle cx="10" cy="10" r="3"/><path d="M10 3v1M10 16v1M3 10h1M16 10h1M5 5l1 1M14 14l1 1M5 15l1-1M14 6l1-1"/>',
+  moon: '<path d="M16.5 11.2A6.7 6.7 0 0 1 8.8 3.5a6.8 6.8 0 1 0 7.7 7.7Z"/>',
   copy: '<rect x="7" y="7" width="10" height="11" rx="1"/><path d="M13 7V2H3v11h4"/>',
   refresh: '<path d="M17 7a7 7 0 1 0 0 6M17 2v5h-5"/>',
   book: '<path d="M10 5C7 2 4 2 2 3v13c3-1 5 0 8 2 3-2 5-3 8-2V3c-3-1-5 0-8 2Zm0 0v13"/>',
 };
 
 export function icon(name: string): string {
-  return `<svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name] ?? paths.file}</svg>`;
+  return `<svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name] ?? paths.file}</svg>`;
 }
