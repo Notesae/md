@@ -67,6 +67,22 @@ describe("公开更新设置的用户意图与确认边界", () => {
     button("primary").click(); button("confirm").click(); await settle(); view.deactivate(); pending.resolve(); await settle();
     expect(invoke.mock.calls.filter(([name]) => name === "install_update")).toHaveLength(0);
   });
+  it("安装已提交后离开设置也撤下确认框，迟到失败不会恢复隐藏的模态层", async () => {
+    await show({ phase: "ready", offer }); const pending = deferred();
+    invoke.mockImplementation(async (name: string) => {
+      if (name === "install_update") { await pending.promise; throw new Error("安装器未启动"); }
+      return state;
+    });
+    button("primary").click(); button("confirm").click(); await settle();
+    expect(invoke.mock.calls.filter(([name]) => name === "install_update")).toHaveLength(1);
+    view.deactivate();
+    expect(dialog().open).toBe(false); expect(dialog().inert).toBe(true);
+    expect(invoke.mock.calls.filter(([name]) => name === "cancel_update")).toHaveLength(0);
+    pending.resolve(); await settle();
+    expect(dialog().open).toBe(false);
+    await view.activate(); button("primary").click();
+    expect(dialog().open).toBe(true); expect(button("confirm").disabled).toBe(false);
+  });
   it("保存失败保留确认、宣告错误且不启动安装", async () => {
     await show({ phase: "ready", offer }); save.mockRejectedValue(new Error("数据盘不可用"));
     button("primary").click(); button("confirm").click(); await settle();

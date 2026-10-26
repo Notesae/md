@@ -47,7 +47,11 @@ export class UpdateSettings {
     this.dialog.addEventListener("cancel", (event) => { event.preventDefault(); this.cancelConfirmation(); });
   }
   async activate(): Promise<void> { this.active = true; await this.refresh(); }
-  deactivate(): void { this.active = false; this.cancelConfirmation(); }
+  /** 离开设置始终撤下模态层，防止标题栏跟随设置隐藏；已提交的安装仍由原请求完成。 */
+  deactivate(): void {
+    this.active = false; this.cancelConfirmation();
+    this.dialog.close(); this.dialog.inert = true;
+  }
 
   private async refresh(): Promise<void> {
     const epoch = ++this.epoch;

@@ -20,16 +20,15 @@ button svg { flex-shrink: 0; }
 * { scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
 input { accent-color: var(--accent); caret-color: var(--accent); }
 input::placeholder { color: var(--muted); opacity: 1; }
-.app-shell { position: relative; overflow: clip; height: 100dvh; display: grid; grid-template-columns: 232px minmax(0, 1fr) 208px; grid-template-rows: 64px minmax(0, 1fr) 30px; }
-.toolbar { grid-column: 1 / -1; display: flex; align-items: center; gap: 18px; padding: 0 22px; border-bottom: 1px solid var(--line); background: var(--paper); user-select: none; }
-.brand { width: 190px; flex-shrink: 0; display: flex; align-items: center; gap: 14px; }
-.wordmark { font: italic 600 34px/1 Georgia, serif; letter-spacing: -.03em; }
-.wordmark span { color: var(--accent); }
-.brand-name { color: var(--muted); letter-spacing: .12em; font-size: 12px; border-left: 1px solid var(--line); padding-left: 14px; }
+.app-shell { position: relative; overflow: clip; height: 100dvh; display: grid; grid-template-columns: 232px minmax(0, 1fr) 208px; grid-template-rows: 48px minmax(0, 1fr) 30px; }
+/* 单行标题栏与纸面使用同一背景；文件信息收缩，为阅读工具和窗口控件保留固定空间。 */
+.toolbar { grid-column: 1 / -1; display: flex; align-items: center; gap: 16px; min-width: 0; padding: 0 0 0 16px; border-bottom: 1px solid var(--line); background: var(--paper); user-select: none; }
 .open-actions, .view-actions { display: flex; align-items: center; gap: 6px; }
-.document-name { display: flex; flex-direction: column; gap: 3px; min-width: 50px; flex: 1; margin-left: 8px; }
-#document-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; }
-#document-description { color: var(--muted); font-size: 10px; }
+.open-actions { flex-shrink: 0; gap: 4px; padding-right: 14px; border-right: 1px solid var(--line); }
+.document-name { display: flex; align-items: baseline; gap: 12px; min-width: 0; flex: 1; }
+#document-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 600; }
+#document-description { flex-shrink: 0; color: var(--muted); font-size: 10px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+#document-description::before { content: "·"; margin-right: 12px; }
 .primary, .secondary, .icon-button, .text-button { display: inline-flex; justify-content: center; align-items: center; gap: 8px; border-radius: 6px; min-height: 36px; padding: 7px 12px; border: 0; background: transparent; white-space: nowrap; }
 .primary { background: var(--accent); color: var(--paper); font-weight: 600; }
 .primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 90%, var(--ink)); }
@@ -38,7 +37,19 @@ input::placeholder { color: var(--muted); opacity: 1; }
 .primary:active:not(:disabled), .secondary:active:not(:disabled), .icon-button:active:not(:disabled) { background: var(--accent-soft); color: var(--accent); }
 .icon-button { width: 36px; height: 36px; padding: 7px; flex-shrink: 0; color: var(--muted); }
 .icon-button[aria-pressed="true"], .icon-button[aria-expanded="true"] { color: var(--accent); background: var(--accent-soft); }
-.view-actions { border-left: 1px solid var(--line); padding-left: 12px; gap: 4px; }
+.toolbar .open-file { min-height: 32px; padding: 5px 10px; border-color: transparent; background: var(--panel); font-size: 12px; }
+.toolbar .open-file:hover { border-color: var(--line); background: var(--surface); }
+.toolbar .icon-button { width: 32px; height: 32px; min-height: 32px; padding: 7px; }
+.toolbar .open-file svg, .toolbar .icon-button svg { width: 18px; height: 18px; }
+.view-actions { flex-shrink: 0; gap: 4px; }
+/* 窗口按钮贴右边缘并独立于拖动区域，关闭按钮使用 Windows 熟悉的悬停反馈。 */
+.window-actions { display: flex; align-self: stretch; flex-shrink: 0; }
+.window-button { width: 44px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--ink); }
+.window-button svg { width: 18px; height: 18px; stroke-width: 1.2; }
+.window-button:hover { background: var(--surface); }
+.window-button:active { background: var(--accent-soft); }
+.window-close:hover, .window-close:active { background: #c42b1c; color: #fffaf7; }
+.window-button:focus-visible { outline-offset: -4px; }
 .icon-button.small { width: 28px; height: 28px; min-height: 28px; padding: 4px; }
 .text-button { color: var(--accent); padding-inline: 4px; }
 .text-button:hover { text-decoration: underline; text-underline-offset: 4px; }
@@ -209,6 +220,10 @@ dialog::backdrop { background: #14251d65; opacity: 0; }
 dialog[open]::backdrop { opacity: 1; }
 dialog h2 { font: 600 23px/1.5 "Palatino Linotype", "SimSun", serif; margin: 0 0 18px; }
 dialog p { font-size: 13px; line-height: 1.9; overflow-wrap: anywhere; }
+/* 标题栏进入模态顶层后仍固定在窗口上沿，确认内容在剩余空间内居中。 */
+dialog:has(> .toolbar) { top: 48px; max-height: calc(100dvh - 88px); }
+dialog > .toolbar { position: fixed; inset: 0 0 auto; height: 48px; z-index: 1; }
+dialog > .toolbar [inert] { opacity: .45; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px; }
 /* 维护进度沿用墨绿强调，仅失败状态使用错误色。 */
 #maintenance-status { min-height: calc(3.8em + 20px); padding: 10px 12px; background: var(--panel); border-radius: 4px; color: var(--muted); }
@@ -217,8 +232,7 @@ dialog p { font-size: 13px; line-height: 1.9; overflow-wrap: anywhere; }
 .notice[hidden], .search-bar[hidden] { opacity: 0; pointer-events: none; }
 @media (max-width: 1150px) {
   .app-shell { grid-template-columns: 204px minmax(0, 1fr) 176px; }
-  .brand { width: 164px; }
-  .toolbar { gap: 12px; padding: 0 18px; }
+  .toolbar { gap: 12px; padding-left: 12px; }
   .prose { padding-inline: 32px; }
   .no-sidebar .app-shell { grid-template-columns: 0 minmax(0, 1fr) 176px; }
   .no-outline .app-shell { grid-template-columns: 204px minmax(0, 1fr) 0; }
@@ -230,9 +244,9 @@ dialog p { font-size: 13px; line-height: 1.9; overflow-wrap: anywhere; }
   /* 绝对定位时 grid-row-end 为 auto 会落到网格容器底边，必须写到第 3 条行线，抽屉才贴住状态栏。 */
   .outline-drawer .outline { display: flex; position: absolute; z-index: 5; grid-row: 2 / 3; top: 0; bottom: 0; right: 0; width: min(280px, 80vw); min-height: 0; visibility: visible; background: var(--paper); box-shadow: -8px 0 28px #14251d20; }
   .no-sidebar .app-shell, .no-sidebar.no-outline .app-shell { grid-template-columns: 0 minmax(0, 1fr) 0; }
-  .brand { width: 70px; } .brand-name { display: none; }
   .toolbar { gap: 10px; }
-  .document-name { margin-left: 0; }
+  .document-name { gap: 8px; }
+  #document-description::before { margin-right: 8px; }
   .welcome-view { padding-inline: 40px; }
 }
 @media (prefers-reduced-motion: no-preference) {

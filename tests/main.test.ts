@@ -6,13 +6,19 @@ const native = vi.hoisted(() => ({
   invoke: vi.fn(), handlers: new Map<string, (event: { payload: string }) => void>(),
   show: vi.fn(), restore: vi.fn(), capture: vi.fn(), closeRequested: vi.fn(),
   search: vi.fn(), dispose: vi.fn(), title: vi.fn(),
+  // 仅替换原生窗口边界，标题栏仍通过真实控制器响应按钮与窗口状态事件。
+  minimize: vi.fn(), toggleMaximize: vi.fn(), close: vi.fn(), isMaximized: vi.fn(), resized: vi.fn(),
   reader: null as { onMessage: (text: string) => void } | null,
   beforeUpdateInstall: null as (() => Promise<void>) | null,
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke, isTauri: () => true }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: async (name: string, handler: (event: { payload: string }) => void) => { native.handlers.set(name, handler); return () => {}; } }));
-vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ setTitle: native.title, onCloseRequested: native.closeRequested }) }));
+vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({
+  setTitle: native.title, onCloseRequested: native.closeRequested,
+  minimize: native.minimize, toggleMaximize: native.toggleMaximize, close: native.close,
+  isMaximized: native.isMaximized, onResized: native.resized,
+}) }));
 vi.mock("../src/storage-settings", () => ({ StorageSettings: class { activate() {} deactivate() {} } }));
 vi.mock("../src/update-settings", () => ({ UpdateSettings: class {
   constructor(_container: HTMLElement, save: () => Promise<void>) { native.beforeUpdateInstall = save; }
@@ -175,6 +181,8 @@ beforeEach(async () => {
   vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => { callback(0); return 0; });
   native.capture.mockReturnValue({ ...anchor }); native.restore.mockResolvedValue(undefined); native.show.mockResolvedValue(undefined);
   native.closeRequested.mockResolvedValue(() => {});
+  native.minimize.mockResolvedValue(undefined); native.toggleMaximize.mockResolvedValue(undefined); native.close.mockResolvedValue(undefined);
+  native.isMaximized.mockResolvedValue(false); native.resized.mockResolvedValue(() => {});
   remoteSession = {
     root: "H:\\应用数据\\MD", version: "0.1.0", storageNotice: null,
     state: { preferences: { theme: "light", fontSize: 18, contentWidth: 780, sidebar: true, outline: true, persistentCache: true, cacheMib: 256 },
@@ -183,6 +191,86 @@ beforeEach(async () => {
   native.invoke.mockImplementation(async (name: string) => name === "get_session" ? structuredClone(remoteSession) : name === "open_document" ? article(1) : null);
   await import("../src/main"); await settle();
   expect(native.show).toHaveBeenCalledTimes(1); native.restore.mockClear();
+});
+
+describe("一体化窗口标题栏", () => {
+  const windowButton = (name: string) => document.querySelector<HTMLButtonElement>(`[data-action="window-${name}"]`)!;
+
+  it("打开入口与当前文件共用可拖动的标题栏，操作按钮不参与拖动", () => {
+    const toolbar = document.querySelector(".toolbar")!;
+    expect(toolbar.getAttribute("data-tauri-drag-region")).toBe("deep");
+    expect(toolbar.querySelector(".brand")).toBeNull();
+    expect(toolbar.querySelector('[data-action="open"]')).not.toBeNull();
+    expect(toolbar.querySelector('[data-action="folder"]')).not.toBeNull();
+    expect(toolbar.querySelector("#document-name")!.textContent).toBe("阅读.md");
+    expect(toolbar.querySelector("#document-name")!.getAttribute("title")).toBe(path);
+    for (const group of [".open-actions", ".view-actions", ".window-actions"]) {
+      expect(toolbar.querySelector(group)!.getAttribute("data-tauri-drag-region")).toBe("false");
+    }
+  });
+
+  it("最小化与最大化交给原生窗口，按钮随实际最大化和还原事件更新", async () => {
+    windowButton("minimize").click(); await settle();
+    expect(native.minimize).toHaveBeenCalledOnce();
+    const maximize = windowButton("maximize");
+    expect(maximize.getAttribute("aria-label")).toBe("最大化");
+    native.isMaximized.mockResolvedValue(true);
+    maximize.click(); await settle();
+    expect(native.toggleMaximize).toHaveBeenCalledOnce();
+    expect(maximize.getAttribute("aria-label")).toBe("还原窗口");
+    expect(maximize.title).toBe("还原窗口");
+    native.isMaximized.mockResolvedValue(false);
+    native.resized.mock.calls[0][0](); await settle();
+    expect(maximize.getAttribute("aria-label")).toBe("最大化");
+  });
+
+  it("关闭按钮沿用保存保护，保存失败时保留文章并允许重试", async () => {
+    const event = { preventDefault: vi.fn() };
+    native.close.mockImplementation(async () => { await native.closeRequested.mock.calls[0][0](event); });
+    const original = native.invoke.getMockImplementation()!;
+    native.capture.mockReturnValue({ ...anchor, offset: 99 });
+    native.invoke.mockImplementation((name: string) => name === "save_position" ? Promise.reject(new Error("磁盘不可写")) : original(name));
+    windowButton("close").click(); await settle();
+    expect(event.preventDefault).toHaveBeenCalledOnce();
+    expect(document.querySelector("#notice-text")!.textContent).toContain("关闭前保存失败");
+    expect(document.querySelector("#article")!.textContent).toContain("正文修订 1");
+    native.invoke.mockImplementation(original); event.preventDefault.mockClear();
+    windowButton("close").click(); await settle();
+    expect(native.close).toHaveBeenCalledTimes(2);
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(native.invoke).toHaveBeenCalledWith("save_position", { path, ...anchor, offset: 99 });
+  });
+
+  it("窗口操作失败给出提示，正文与其他工具保持可用", async () => {
+    native.minimize.mockRejectedValueOnce(new Error("窗口暂时不可用"));
+    windowButton("minimize").click(); await settle();
+    expect(document.querySelector("#notice-text")!.textContent).toContain("窗口暂时不可用");
+    expect(document.querySelector("#article")!.textContent).toContain("正文修订 1");
+    expect(document.querySelector<HTMLButtonElement>('[data-action="search"]')!.disabled).toBe(false);
+  });
+
+  it("维护与更新确认期间保留窗口控制，关闭确认框后恢复阅读工具", async () => {
+    clickSettings(); await settle();
+    const toolbar = document.querySelector<HTMLElement>(".toolbar")!;
+    const shell = toolbar.parentElement;
+    for (const id of ["maintenance-dialog", "update-install-dialog"]) {
+      // 只模拟原生 dialog 的 open 属性变化，检查同一标题栏是否进入可交互的模态子树。
+      const dialog = document.createElement("dialog"); dialog.id = id;
+      document.querySelector("#settings")!.append(dialog);
+      dialog.setAttribute("open", ""); await settle();
+      expect(toolbar.parentElement).toBe(dialog);
+      expect(toolbar.querySelector<HTMLElement>(".open-actions")!.inert).toBe(true);
+      expect(toolbar.querySelector<HTMLElement>(".view-actions")!.inert).toBe(true);
+      expect(toolbar.querySelector<HTMLElement>(".window-actions")!.inert).not.toBe(true);
+      windowButton("minimize").click(); await settle();
+      dialog.removeAttribute("open"); await settle();
+      expect(toolbar.parentElement).toBe(shell);
+      expect(toolbar.querySelector<HTMLElement>(".open-actions")!.inert).toBe(false);
+      expect(toolbar.querySelector<HTMLElement>(".view-actions")!.inert).toBe(false);
+      dialog.remove();
+    }
+    expect(native.minimize).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("文章错误提示的恢复边界", () => {

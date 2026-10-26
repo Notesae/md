@@ -1212,6 +1212,8 @@ pub fn run() {
             let window =
                 WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                     .title("MD · Markdown 阅读器")
+                    // 窗口标题与阅读工具在 WebView 内合并呈现，保留系统任务栏标题。
+                    .decorations(false)
                     .inner_size(width, height)
                     .min_inner_size(800.0, 580.0)
                     .maximized(maximized)

@@ -8,6 +8,10 @@ const paths: Record<string, string> = {
   outline: '<path d="M7 4h10M7 10h10M7 16h10M3 4h.1M3 10h.1M3 16h.1"/>',
   chevron: '<path d="m7 5 5 5-5 5"/>',
   close: '<path d="m5 5 10 10M15 5 5 15"/>',
+  // 窗口控件沿用同一描边图标，最大化后以重叠方框表示还原。
+  minimize: '<path d="M4 10h12"/>',
+  maximize: '<rect x="4" y="4" width="12" height="12"/>',
+  restore: '<path d="M7 6V3h10v10h-3"/><rect x="3" y="7" width="10" height="10"/>',
   previous: '<path d="m12 5-5 5 5 5"/>',
   next: '<path d="m8 5 5 5-5 5"/>',
   sun: '<circle cx="10" cy="10" r="3.5"/><path d="M10 1v2m0 14v2M1 10h2m14 0h2M3.5 3.5 5 5m10 10 1.5 1.5M3.5 16.5 5 15M15 5l1.5-1.5"/>',

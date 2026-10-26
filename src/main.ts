@@ -9,20 +9,24 @@ import type { UpdateSettings } from "./update-settings";
 import { PreferenceStore } from "./preferences";
 import "./styles.css";
 
-// 主窗口复用阅读视图和设置页，所有文件名称与路径用文本节点呈现。
+// 标题栏与阅读工具共用一行；原生拖动区避开按钮，文件名称与路径仍用文本节点呈现。
 const app = document.querySelector<HTMLDivElement>("#app")!;
 app.innerHTML = `<div class="app-shell">
-  <header class="toolbar">
-    <div class="brand"><span class="wordmark">md<span>·</span></span><span class="brand-name">阅读器</span></div>
-    <div class="open-actions"><button class="primary" data-action="open">${icon("file")}<span>打开文件</span></button><button class="icon-button" data-action="folder" title="打开文件夹 · Ctrl+Shift+O" aria-label="打开文件夹">${icon("folder")}</button></div>
+  <header class="toolbar" data-tauri-drag-region="deep">
+    <div class="open-actions" data-tauri-drag-region="false"><button class="secondary open-file" data-action="open" title="打开文件 · Ctrl+O">${icon("file")}<span>打开文件</span></button><button class="icon-button" data-action="folder" title="打开文件夹 · Ctrl+Shift+O" aria-label="打开文件夹">${icon("folder")}</button></div>
     <div class="document-name"><span id="document-name">开始阅读</span><span id="document-description">本地 Markdown</span></div>
-    <nav class="view-actions" aria-label="阅读工具">
+    <nav class="view-actions" aria-label="阅读工具" data-tauri-drag-region="false">
       <button class="icon-button" data-action="search" title="搜索正文 · Ctrl+F" aria-label="搜索正文" aria-controls="search-bar" aria-expanded="false" disabled>${icon("search")}</button>
       <button class="icon-button" data-action="sidebar" title="文件侧栏" aria-label="切换文件侧栏">${icon("sidebar")}</button>
       <button class="icon-button" data-action="outline" title="文章目录" aria-label="切换文章目录" aria-controls="outline-panel">${icon("outline")}</button>
       <button class="icon-button" data-action="theme" title="切换主题" aria-label="切换主题">${icon("moon")}</button>
       <button class="icon-button" data-action="settings" title="设置" aria-label="打开设置" aria-controls="settings" aria-expanded="false">${icon("settings")}</button>
     </nav>
+    <div class="window-actions" role="group" aria-label="窗口控制" data-tauri-drag-region="false">
+      <button class="window-button" data-action="window-minimize" title="最小化" aria-label="最小化">${icon("minimize")}</button>
+      <button class="window-button" data-action="window-maximize" title="最大化" aria-label="最大化">${icon("maximize")}</button>
+      <button class="window-button window-close" data-action="window-close" title="关闭窗口" aria-label="关闭窗口">${icon("close")}</button>
+    </div>
   </header>
   <aside class="sidebar" aria-label="文件导航">
     <section class="nav-section"><div class="section-title"><h2>文件夹</h2><button class="icon-button small" data-action="folder" aria-label="选择文件夹">${icon("folder")}</button></div><div id="folder-controls" class="folder-controls" hidden><label class="sr-only" for="recent-folder">最近文件夹</label><select id="recent-folder"></select><button class="icon-button small" data-action="close-folder" aria-label="关闭文件夹" title="关闭文件夹，保留文章和最近记录">${icon("close")}</button></div><div id="file-tree"><p class="empty-small">打开文件夹，<br>让笔记保持原来的秩序。</p></div></section>
@@ -50,6 +54,17 @@ app.innerHTML = `<div class="app-shell">
   <footer class="statusbar"><span class="status-left">本地文件<span class="status-dot"></span>只读</span><span id="document-status">准备好开始阅读</span><button class="text-button" id="close-document" data-action="close-document" hidden>关闭文章</button></footer>
   <div class="notice" id="notice" role="status" hidden inert><span id="notice-text"></span><button class="icon-button small" data-action="dismiss-notice" aria-label="关闭提示">${icon("close")}</button></div>
 </div>`;
+
+// showModal 会禁用对话框外的页面；临时移入同一标题栏，窗口控制可用而阅读工具继续锁定。
+const toolbar = app.querySelector<HTMLElement>(".toolbar")!;
+const toolbarHome = toolbar.parentElement!;
+new MutationObserver((records) => {
+  if (!records.some(({ target }) => target instanceof HTMLDialogElement)) return;
+  const host = app.querySelector<HTMLDialogElement>("dialog[open]") ?? toolbarHome;
+  if (toolbar.parentElement === host) return;
+  host.prepend(toolbar);
+  toolbar.querySelectorAll<HTMLElement>(".open-actions, .view-actions").forEach((group) => { group.inert = host !== toolbarHome; });
+}).observe(app, { subtree: true, attributes: true, attributeFilter: ["open"] });
 
 const pane = document.querySelector<HTMLElement>("#reading-pane")!;
 const narrowLayout = matchMedia("(max-width: 950px)");
@@ -340,7 +355,7 @@ async function openPath(path: string, restore?: ReadingPosition, kind: "open" | 
     document.querySelector<HTMLElement>("#close-document")!.hidden = false;
     document.querySelector("#document-name")!.textContent = filename(result.path);
     document.querySelector<HTMLElement>("#document-name")!.title = displayPath(result.path);
-    document.querySelector("#document-description")!.textContent = `${sizeLabel(result.bytes)} · Markdown`;
+    document.querySelector("#document-description")!.textContent = sizeLabel(result.bytes);
     if (isTauri()) void getCurrentWindow().setTitle(`${filename(result.path)} · MD`);
     renderOutline();
     restoringPosition = saved;
@@ -458,10 +473,24 @@ function closeDocument(): Promise<void> {
   return closing;
 }
 
-/** 工具栏和空状态共用动作，所有打开入口都走同一个授权及请求处理流程。 */
+/** 按实际窗口状态更新还原图标，也覆盖双击标题栏、系统快捷键等外部尺寸变化。 */
+async function syncWindowState(): Promise<void> {
+  try {
+    const maximized = await getCurrentWindow().isMaximized();
+    const button = document.querySelector<HTMLButtonElement>('[data-action="window-maximize"]')!;
+    button.innerHTML = icon(maximized ? "restore" : "maximize");
+    button.title = maximized ? "还原窗口" : "最大化";
+    button.setAttribute("aria-label", button.title);
+  } catch (error) { message(`无法读取窗口状态：${String(error)}`, true); }
+}
+
+/** 工具栏和空状态共用动作，窗口关闭仍经过原生关闭事件中的保存保护。 */
 async function action(name: string): Promise<void> {
   try {
-    if (name === "open") { const path = await invoke<string | null>("pick_file"); if (path) await openPath(path); }
+    if (name === "window-minimize") await getCurrentWindow().minimize();
+    else if (name === "window-maximize") { await getCurrentWindow().toggleMaximize(); await syncWindowState(); }
+    else if (name === "window-close") await getCurrentWindow().close();
+    else if (name === "open") { const path = await invoke<string | null>("pick_file"); if (path) await openPath(path); }
     else if (name === "folder") await folderAction("pick");
     else if (name === "close-folder") await folderAction("close");
     else if (name === "search") toggleSearch(true);
@@ -586,6 +615,9 @@ async function start(): Promise<void> {
       try { await preferences.flush(); await persistPosition(); }
       catch (error) { event.preventDefault(); closing = false; message(`关闭前保存失败，请重试：${String(error)}`, true); }
     });
+    // 窗口状态不阻塞打开事件订阅和会话恢复，订阅失败也不阻止阅读。
+    void getCurrentWindow().onResized(() => { void syncWindowState(); }).then(syncWindowState)
+      .catch((error) => message(`无法监听窗口尺寸：${String(error)}`, true));
     applyPreferences(); renderRecent();
     document.querySelector("#data-root")!.textContent = displayPath(session.root);
     document.querySelector("#version")!.textContent = `MD ${session.version} · 本地 Markdown 阅读器`;
