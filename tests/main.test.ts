@@ -5,10 +5,10 @@ import type { DirectoryEntry, ReaderDocument, ReadingPosition, Session } from ".
 const native = vi.hoisted(() => ({
   invoke: vi.fn(), handlers: new Map<string, (event: { payload: string }) => void>(),
   show: vi.fn(), restore: vi.fn(), capture: vi.fn(), closeRequested: vi.fn(),
-  search: vi.fn(), dispose: vi.fn(), title: vi.fn(),
+  search: vi.fn(), jumpMatch: vi.fn(), dispose: vi.fn(), title: vi.fn(),
   // 仅替换原生窗口边界，标题栏仍通过真实控制器响应按钮与窗口状态事件。
   minimize: vi.fn(), toggleMaximize: vi.fn(), close: vi.fn(), isMaximized: vi.fn(), resized: vi.fn(),
-  reader: null as { onMessage: (text: string) => void } | null,
+  reader: null as { onMessage: (text: string) => void; onSearch: (count: number, index: number, truncated: boolean) => void } | null,
   beforeUpdateInstall: null as (() => Promise<void>) | null,
 }));
 
@@ -27,10 +27,12 @@ vi.mock("../src/update-settings", () => ({ UpdateSettings: class {
 // 只替换排版和原生边界；真实主窗口控制器、DOM 事件与异步打开流程参与测试。
 vi.mock("../src/reader", () => ({ Reader: class {
   onMessage = (_text: string) => {};
+  onSearch = (_count: number, _index: number, _truncated: boolean) => {};
   constructor(readonly article: HTMLElement, readonly viewport: HTMLElement) { native.reader = this; }
   capturePosition = native.capture;
   restorePosition = native.restore;
   search = native.search;
+  jumpMatch = native.jumpMatch;
   dispose = native.dispose;
   async show(value: ReaderDocument, painted: () => void) {
     this.article.textContent = value.blocks.join("");
@@ -449,6 +451,64 @@ describe("搜索的显示与输入合并", () => {
     closeSearch(); await vi.advanceTimersByTimeAsync(100);
     expect(native.search).toHaveBeenCalledExactlyOnceWith("");
     expect(document.querySelector<HTMLElement>("#search-bar")!.hidden).toBe(true);
+  });
+
+  it("清除入口取消待执行的搜索，保留浮层、输入焦点和阅读位置", async () => {
+    const pane = document.querySelector<HTMLElement>("#reading-pane")!; pane.scrollTop = 320;
+    search(); native.search.mockClear();
+    const clear = document.querySelector<HTMLButtonElement>('[data-action="clear-search"]');
+    expect(clear).not.toBeNull(); expect(clear!.hidden).toBe(true);
+    input().value = "待搜索的词"; input().dispatchEvent(new Event("input", { bubbles: true }));
+    expect(clear!.hidden).toBe(false);
+    clear!.click(); native.reader!.onSearch(0, -1, false); await settle();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(input().value).toBe(""); expect(clear!.hidden).toBe(true);
+    expect(native.search).toHaveBeenCalledExactlyOnceWith("");
+    expect(document.querySelector("#search-count")!.textContent).toBe("");
+    expect(document.querySelector<HTMLElement>("#search-bar")!.hidden).toBe(false);
+    expect(document.activeElement).toBe(input()); expect(pane.scrollTop).toBe(320);
+  });
+
+  it("结果计数、上下导航和无匹配状态保持一致", () => {
+    search(); input().value = "阅读";
+    const previous = document.querySelector<HTMLButtonElement>('[data-action="previous-match"]')!;
+    const next = document.querySelector<HTMLButtonElement>('[data-action="next-match"]')!;
+    native.reader!.onSearch(8, 2, false);
+    expect(document.querySelector("#search-count")!.textContent).toBe("3 / 8");
+    expect(previous.title).toContain("Shift+Enter"); expect(next.title).toContain("Enter");
+    previous.click(); next.click();
+    expect(native.jumpMatch.mock.calls).toEqual([[-1], [1]]);
+    native.reader!.onSearch(0, -1, false);
+    expect(document.querySelector("#search-count")!.textContent).toBe("无匹配");
+    expect(previous.disabled).toBe(true); expect(next.disabled).toBe(true);
+  });
+});
+
+describe("阅读偏好控件", () => {
+  it("纸面选择使用单选语义，与工具栏切换及持久化偏好同步", async () => {
+    clickSettings(); await settle();
+    const choices = document.querySelectorAll<HTMLInputElement>('#theme-setting input[type="radio"]');
+    expect(choices).toHaveLength(3);
+    expect([...choices].filter((choice) => choice.checked).map((choice) => choice.value)).toEqual(["light"]);
+    const dark = document.querySelector<HTMLInputElement>('input[name="theme"][value="dark"]')!;
+    dark.click(); expect(document.documentElement.dataset.theme).toBe("dark"); expect(dark.checked).toBe(true);
+    document.querySelector<HTMLButtonElement>('[data-action="theme"]')!.click();
+    expect(document.querySelector<HTMLInputElement>('input[name="theme"][value="light"]')!.checked).toBe(true);
+    document.querySelector<HTMLInputElement>('input[name="theme"][value="system"]')!.click();
+    await vi.advanceTimersByTimeAsync(180);
+    expect(native.invoke).toHaveBeenCalledWith("save_preferences", { preferences: expect.objectContaining({ theme: "system" }) });
+  });
+
+  it("滑块两端的轨道进度、读数与可访问值随实际偏好更新", () => {
+    for (const [id, output] of [["font-setting", "font-value"], ["width-setting", "width-value"]]) {
+      const input = document.querySelector<HTMLInputElement>(`#${id}`)!;
+      for (const [value, progress] of [[input.min, "0%"], [input.max, "100%"]]) {
+        input.value = value; input.dispatchEvent(new Event("input", { bubbles: true }));
+        expect(input.style.getPropertyValue("--range-progress")).toBe(progress);
+        expect(input.getAttribute("aria-valuetext")).toBe(`${value} 像素`);
+        expect(document.querySelector(`#${output}`)!.textContent).toBe(`${value} px`);
+      }
+    }
   });
 });
 

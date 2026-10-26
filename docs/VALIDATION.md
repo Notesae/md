@@ -124,3 +124,12 @@
 - `node node_modules/vitest/vitest.mjs run tests/main.test.ts tests/reader-resources.test.ts`：60 项通过；TypeScript 与 Vite 构建、差异检查通过，界面静态检测返回空问题列表。
 - `npm run build:desktop -- --no-bundle -- --locked --offline` 通过，已将本次图标与样式更新打入 `.tools/target/release/md-reader.exe`，未启动程序。
 - 本次为 SVG 与 CSS 调整，未新增镜像样式实现的测试；没有操作桌面或截图，实际显示与不同 DPI 下的观感未验证。
+
+## 2026-10-26 阅读偏好与搜索控件重构
+
+- 外观下拉改为浅色、深色、跟随系统三种纸面预览，使用同组原生 radio 保留单选与键盘语义；与工具栏主题切换和现有偏好保存同步。
+- 字号与宽度滑块重做轨道、纸面滑钮、范围标记、独立读数及焦点反馈；数值、轨道进度和辅助朗读值同步更新。高对比模式保留轨道与选中标记，不依赖渐变背景。
+- 文内搜索改为靠右的紧凑浮层，输入、计数、上下结果导航和关闭分组呈现，焦点边界由浮层统一承担。清除入口取消待执行搜索并立即清除高亮，保留输入焦点；原有 40ms 非空输入合并和零高度锚点继续使用，不推移正文。
+- 新增 4 项主控制器回归，先确认旧实现失败，再验证主题同步、滑块边界、清除时的请求/焦点/阅读位置和结果导航。完整 `node node_modules/vitest/vitest.mjs run`：13 个文件、112 项通过，其中主控制器 50 项；junction 用例沿用仓库 `.tools/tmp` 的隔离测试目录在沙箱外运行。
+- TypeScript 与 Vite 构建、`git diff --check` 通过，界面静态检测返回空问题列表。没有启动或操作桌面窗口，也没有截图；实际视觉、键盘操作、DPI 和系统高对比效果仍未实测。
+- `npm run build:desktop -- --no-bundle -- --locked --offline` 通过，最新控件已打入 `.tools/target/release/md-reader.exe`；未启动程序或生成安装包。

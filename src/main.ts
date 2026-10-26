@@ -34,15 +34,22 @@ app.innerHTML = `<div class="app-shell">
     <div class="sidebar-bottom">原文只读，安心阅读。</div>
   </aside>
   <main class="reading-pane" id="reading-pane" tabindex="0" aria-label="正文阅读区">
-    <div class="search-bar" id="search-bar" hidden inert><div class="search-controls" role="search"><label for="search-input">${icon("search")}<span class="sr-only">搜索正文</span></label><input id="search-input" type="search" placeholder="查找这篇文章…" autocomplete="off"><span id="search-count" role="status"></span><button class="icon-button small" data-action="previous-match" aria-label="上一个结果" disabled>${icon("previous")}</button><button class="icon-button small" data-action="next-match" aria-label="下一个结果" disabled>${icon("next")}</button><button class="icon-button small" data-action="close-search" aria-label="关闭搜索">${icon("close")}</button></div></div>
+    <div class="search-bar" id="search-bar" hidden inert><div class="search-controls" role="search" aria-label="文内查找">
+      <div class="search-field"><label for="search-input">${icon("search")}<span class="sr-only">搜索正文</span></label><input id="search-input" type="search" placeholder="查找这篇文章…" autocomplete="off" aria-describedby="search-count"><button class="text-button search-clear" data-action="clear-search" aria-label="清除搜索" hidden>清除</button><span id="search-count" role="status"></span></div>
+      <div class="search-navigation" role="group" aria-label="搜索结果导航"><button class="icon-button small" data-action="previous-match" title="上一个结果 · Shift+Enter" aria-label="上一个结果" disabled>${icon("up")}</button><button class="icon-button small" data-action="next-match" title="下一个结果 · Enter" aria-label="下一个结果" disabled>${icon("down")}</button></div><button class="icon-button small" data-action="close-search" title="关闭搜索 · Esc" aria-label="关闭搜索">${icon("close")}</button>
+    </div></div>
     <div class="welcome-view" id="welcome"><div class="welcome-book">${icon("book")}</div><h1>留一点时间，<br>给阅读。</h1><p>从一篇 Markdown 开始。<br>文字留在原处，目光回到此刻。</p><button class="primary large" data-action="open">${icon("file")}打开一篇文章<kbd>Ctrl O</kbd></button><div class="welcome-hint">也可以拖入文件，或<button class="text-button" data-action="folder">打开文件夹</button></div></div>
     <article class="prose" id="article" hidden></article>
     <div class="document-end" id="document-end" hidden><span></span>读到这里，刚刚好。<span></span><button class="text-button" data-action="top">回到开头</button></div>
     <section id="settings" class="settings" hidden aria-labelledby="settings-title"><button class="text-button back-button" data-action="settings">${icon("previous")}返回阅读</button><h1 id="settings-title" tabindex="-1">阅读与存储</h1><p class="settings-description">调整到适合你的节奏。</p>
-      <fieldset><legend>阅读</legend>
-        <label class="setting-row"><span>外观<span class="setting-help">为不同的光线选择合适的纸面</span></span><select id="theme-setting"><option value="light">浅色</option><option value="dark">深色</option><option value="system">跟随系统</option></select></label>
-        <label class="setting-row"><span>正文字号</span><span class="range-setting"><input id="font-setting" type="range" min="14" max="28"><output id="font-value"></output></span></label>
-        <label class="setting-row"><span>正文宽度</span><span class="range-setting"><input id="width-setting" type="range" min="560" max="1200" step="20"><output id="width-value"></output></span></label>
+      <fieldset class="reading-settings"><legend>阅读</legend>
+        <div class="appearance-setting"><div id="appearance-label">外观<span class="setting-help">为不同的光线选择合适的纸面</span></div>
+          <div id="theme-setting" class="theme-options" role="radiogroup" aria-labelledby="appearance-label">
+            ${[["light", "浅色"], ["dark", "深色"], ["system", "跟随系统"]].map(([value, label]) => `<label class="theme-choice"><input class="sr-only" type="radio" name="theme" value="${value}"><span class="theme-preview theme-preview-${value}" aria-hidden="true"><span class="preview-rail"></span><span class="preview-sheet"><i></i><i></i><i></i></span><span class="theme-check">${icon("check")}</span></span><span class="theme-name">${label}</span></label>`).join("")}
+          </div>
+        </div>
+        <label class="setting-row range-row"><span id="font-label">正文字号</span><span class="range-setting"><span class="range-scale"><input id="font-setting" type="range" min="14" max="28" aria-labelledby="font-label"><span class="range-limits" aria-hidden="true"><span>14</span><span>28</span></span></span><output id="font-value" for="font-setting"></output></span></label>
+        <label class="setting-row range-row"><span id="width-label">正文宽度</span><span class="range-setting"><span class="range-scale"><input id="width-setting" type="range" min="560" max="1200" step="20" aria-labelledby="width-label"><span class="range-limits" aria-hidden="true"><span>560</span><span>1200</span></span></span><output id="width-value" for="width-setting"></output></span></label>
       </fieldset>
       <fieldset><legend>应用更新</legend><div id="update-controls"></div></fieldset>
       <fieldset><legend>应用数据</legend><p class="setting-help">阅读记录、偏好和浏览器缓存使用以下位置。原始文章与附件保持原位。</p><p id="data-root" class="path-value"></p><div id="storage-controls"></div></fieldset>
@@ -161,10 +168,15 @@ function applyPreferences(): void {
   document.documentElement.style.setProperty("--body-width", `${p.contentWidth}px`);
   app.classList.toggle("no-sidebar", !p.sidebar); app.classList.toggle("no-outline", !p.outline);
   document.querySelector('[data-action="theme"]')!.innerHTML = icon(dark ? "sun" : "moon");
-  document.querySelector<HTMLSelectElement>("#theme-setting")!.value = p.theme;
-  document.querySelector<HTMLInputElement>("#font-setting")!.value = String(p.fontSize);
+  document.querySelectorAll<HTMLInputElement>('#theme-setting input').forEach((choice) => { choice.checked = choice.value === p.theme; });
+  // 滑块沿用原生键盘语义，轨道填充和辅助朗读值与同一份已保存偏好同步。
+  for (const [id, value] of [["font-setting", p.fontSize], ["width-setting", p.contentWidth]] as const) {
+    const input = document.querySelector<HTMLInputElement>(`#${id}`)!;
+    input.value = String(value);
+    input.style.setProperty("--range-progress", `${(value - Number(input.min)) / (Number(input.max) - Number(input.min)) * 100}%`);
+    input.setAttribute("aria-valuetext", `${value} 像素`);
+  }
   document.querySelector("#font-value")!.textContent = `${p.fontSize} px`;
-  document.querySelector<HTMLInputElement>("#width-setting")!.value = String(p.contentWidth);
   document.querySelector("#width-value")!.textContent = `${p.contentWidth} px`;
   document.querySelector('[data-action="sidebar"]')!.setAttribute("aria-pressed", String(p.sidebar));
   syncOutlineButton();
@@ -430,6 +442,7 @@ function toggleSearch(show: boolean): void {
   bar.hidden = !show; bar.inert = !show;
   document.querySelector('[data-action="search"]')!.setAttribute("aria-expanded", String(show));
   const input = document.querySelector<HTMLInputElement>("#search-input")!;
+  document.querySelector<HTMLButtonElement>('[data-action="clear-search"]')!.hidden = !input.value;
   if (show) { if (settingsOpen) toggleSettings(); reader.search(input.value); input.focus({ preventScroll: true }); input.select(); }
   else { reader.search(""); document.querySelector("#search-count")!.textContent = ""; pane.focus({ preventScroll: true }); }
 }
@@ -495,6 +508,10 @@ async function action(name: string): Promise<void> {
     else if (name === "close-folder") await folderAction("close");
     else if (name === "search") toggleSearch(true);
     else if (name === "close-search") toggleSearch(false);
+    else if (name === "clear-search") {
+      const input = document.querySelector<HTMLInputElement>("#search-input")!;
+      input.value = ""; input.dispatchEvent(new Event("input", { bubbles: true })); input.focus({ preventScroll: true });
+    }
     else if (name === "previous-match") reader.jumpMatch(-1);
     else if (name === "next-match") reader.jumpMatch(1);
     else if (name === "sidebar") withStableOffset(() => changePreferences({ sidebar: !preferences.snapshot.sidebar }));
@@ -522,13 +539,20 @@ document.querySelector("#recent-folder")!.addEventListener("change", (event) => 
   if (path) void folderAction("recent", path).catch((error) => message(String(error), true));
 });
 document.querySelector("#search-input")!.addEventListener("input", () => {
-  searchStart = performance.now();
-  clearTimeout(searchTimer); searchTimer = window.setTimeout(() => reader.search(document.querySelector<HTMLInputElement>("#search-input")!.value), 40);
+  const input = document.querySelector<HTMLInputElement>("#search-input")!;
+  document.querySelector<HTMLButtonElement>('[data-action="clear-search"]')!.hidden = !input.value;
+  clearTimeout(searchTimer); searchStart = input.value ? performance.now() : null;
+  // 清空立即移除高亮；非空输入仍合并处理，旧计时器不能重新提交已清除的词。
+  if (!input.value) { reader.search(""); return; }
+  searchTimer = window.setTimeout(() => reader.search(input.value), 40);
 });
 document.querySelector("#search-input")!.addEventListener("keydown", (event) => {
   if ((event as KeyboardEvent).key === "Enter") { event.preventDefault(); reader.jumpMatch((event as KeyboardEvent).shiftKey ? -1 : 1); }
 });
-document.querySelector("#theme-setting")!.addEventListener("change", (event) => changePreferences({ theme: (event.target as HTMLSelectElement).value as Preferences["theme"] }));
+document.querySelector("#theme-setting")!.addEventListener("change", (event) => {
+  const choice = event.target as HTMLInputElement;
+  if (choice.checked) changePreferences({ theme: choice.value as Preferences["theme"] });
+});
 document.querySelector("#font-setting")!.addEventListener("input", (event) => changePreferences({ fontSize: Number((event.target as HTMLInputElement).value) }));
 document.querySelector("#width-setting")!.addEventListener("input", (event) => changePreferences({ contentWidth: Number((event.target as HTMLInputElement).value) }));
 pane.addEventListener("scroll", () => {

@@ -14,6 +14,10 @@ const paths: Record<string, string> = {
   restore: '<path d="M7 6V3h10v10h-3"/><rect x="3" y="7" width="10" height="10"/>',
   previous: '<path d="m12 5-5 5 5 5"/>',
   next: '<path d="m8 5 5 5-5 5"/>',
+  // 结果导航使用上下方向，纸面选择以对勾表示当前主题。
+  up: '<path d="m5 12 5-5 5 5"/>',
+  down: '<path d="m5 8 5 5 5-5"/>',
+  check: '<path d="m5 10 3.5 3.5L15 7"/>',
   sun: '<circle cx="10" cy="10" r="3"/><path d="M10 3v1M10 16v1M3 10h1M16 10h1M5 5l1 1M14 14l1 1M5 15l1-1M14 6l1-1"/>',
   moon: '<path d="M16.5 11.2A6.7 6.7 0 0 1 8.8 3.5a6.8 6.8 0 1 0 7.7 7.7Z"/>',
   copy: '<rect x="7" y="7" width="10" height="11" rx="1"/><path d="M13 7V2H3v11h4"/>',

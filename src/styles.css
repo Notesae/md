@@ -102,12 +102,21 @@ kbd { font: 10px "Segoe UI", sans-serif; opacity: .8; margin-left: 16px; border:
 .statusbar .text-button { min-height: 24px; font-size: 10px; }
 .search-bar { position: sticky; top: 0; z-index: 3; display: block; height: 0; }
 /* 零高度锚点上的浮层不推移正文，开关搜索也不改写阅读位置。 */
-.search-controls { position: absolute; top: 8px; inset-inline: 20px; display: flex; align-items: center; gap: 6px; padding: 6px 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 4px 16px #14251d18; }
+.search-controls { position: absolute; top: 12px; right: 20px; width: min(560px, calc(100% - 40px)); display: flex; align-items: center; gap: 8px; padding: 6px; background: var(--paper); border: 1px solid var(--line); border-radius: 9px; box-shadow: 0 6px 24px #14251d20; }
 .search-controls:focus-within { border-color: var(--accent); }
 .reading-pane:has(.search-bar:not([hidden])) { scroll-padding-top: 80px; }
-.search-bar label { display: flex; color: var(--muted); }
-.search-bar input { flex: 1; min-width: 60px; border: 0; background: transparent; color: var(--ink); padding: 5px 8px; border-radius: 3px; }
-#search-count { color: var(--muted); font-size: 11px; white-space: nowrap; min-width: 45px; text-align: right; font-variant-numeric: tabular-nums; }
+.search-field { display: flex; flex: 1; min-width: 0; align-items: center; gap: 8px; padding-left: 6px; }
+.search-field label { display: flex; flex-shrink: 0; color: var(--muted); }
+.search-field label svg { width: 18px; height: 18px; }
+.search-field input { flex: 1; width: 0; min-width: 0; height: 28px; border: 0; background: transparent; color: var(--ink); padding: 0; font-size: 12px; }
+/* 整条查找栏承担焦点边界，移除输入框与浏览器自带清除控件的重复装饰。 */
+.search-field input:focus-visible { outline: none; }
+.search-field input::-webkit-search-decoration, .search-field input::-webkit-search-cancel-button { appearance: none; }
+.search-clear { min-height: 28px; padding: 0 2px; color: var(--muted); font-size: 11px; }
+.search-navigation { display: flex; flex-shrink: 0; gap: 2px; padding-left: 8px; border-left: 1px solid var(--line); }
+.search-controls .icon-button svg { width: 17px; height: 17px; }
+.search-controls .icon-button:hover:not(:disabled) { color: var(--accent); background: var(--accent-soft); }
+#search-count { flex-shrink: 0; color: var(--muted); font-size: 11px; white-space: nowrap; min-width: 42px; text-align: right; font-variant-numeric: tabular-nums; }
 .notice { position: fixed; bottom: 44px; left: 50%; transform: translateX(-50%); max-width: min(680px, 90vw); display: flex; align-items: center; gap: 18px; padding: 12px 16px; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 5px; z-index: 10; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 .no-sidebar .app-shell { grid-template-columns: 0 minmax(0, 1fr) 208px; }
@@ -177,9 +186,50 @@ kbd { font: 10px "Segoe UI", sans-serif; opacity: .8; margin-left: 16px; border:
 .setting-row { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 18px 0; }
 .setting-help { display: block; font-size: 12px; line-height: 1.8; color: var(--muted); margin: 5px 0; }
 .settings select, .settings input[type="number"] { padding: 7px 12px; min-width: 100px; border: 1px solid var(--line); border-radius: 4px; background: var(--paper); color: var(--ink); }
-.range-setting { display: flex; gap: 16px; align-items: center; }
-.range-setting input { width: clamp(100px, 12vw, 180px); }
-.range-setting output { width: 54px; text-align: right; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+/* 外观直接展示纸面比例，保留原生单选的方向键和屏幕阅读器语义。 */
+.appearance-setting { padding: 18px 0 26px; border-bottom: 1px solid var(--line); }
+.theme-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-top: 16px; }
+.theme-choice { min-width: 0; display: grid; gap: 9px; cursor: pointer; }
+.theme-preview { --preview-paper: #fbfaf6; --preview-panel: #eeefe7; --preview-line: #acb9a8; position: relative; display: grid; grid-template-columns: 24% 1fr; height: 76px; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; background: var(--preview-paper); }
+.theme-preview-dark { --preview-paper: #1b2420; --preview-panel: #2e3b31; --preview-line: #7e927e; }
+.theme-preview-system { background: linear-gradient(90deg, #fbfaf6 50%, #1b2420 50%); --preview-panel: #e7e9df; --preview-line: #869780; }
+.preview-rail { background: var(--preview-panel); }
+.preview-sheet { display: flex; flex-direction: column; align-items: flex-start; gap: 7px; padding: 15px 12px; }
+.preview-sheet i { display: block; width: 85%; height: 2px; border-radius: 1px; background: var(--preview-line); }
+.preview-sheet i:first-child { width: 50%; height: 3px; }
+.preview-sheet i:last-child { width: 65%; }
+.theme-name { font-size: 12px; color: var(--muted); text-align: center; }
+.theme-check { position: absolute; right: 7px; bottom: 7px; display: flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; color: var(--paper); background: var(--accent); opacity: 0; }
+.theme-check svg { width: 13px; height: 13px; }
+.theme-choice:hover .theme-preview { border-color: var(--muted); }
+.theme-choice:has(input:checked) .theme-preview { border-color: var(--accent); }
+.theme-choice:has(input:checked) .theme-name { color: var(--accent); font-weight: 600; }
+.theme-choice:has(input:checked) .theme-check { opacity: 1; }
+.theme-choice:has(input:focus-visible) .theme-preview { outline: 2px solid var(--accent); outline-offset: 3px; }
+/* 滑块扩大命中区，轨道、纸面滑钮和独立读数共用同一数值；不增加拖动处理器。 */
+.range-row { border-bottom: 1px solid var(--line); }
+.range-setting { --range-track: color-mix(in srgb, var(--muted) 80%, var(--paper)); display: grid; grid-template-columns: minmax(0, 1fr) 66px; gap: 18px; align-items: center; width: min(360px, 62%); }
+.range-scale { min-width: 0; display: grid; gap: 2px; }
+.range-setting input[type="range"] { appearance: none; display: block; width: 100%; min-width: 0; height: 26px; margin: 0; padding: 0; background: transparent; cursor: pointer; }
+.range-setting input[type="range"]::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; background: linear-gradient(90deg, var(--accent) var(--range-progress), var(--range-track) var(--range-progress)); }
+.range-setting input[type="range"]::-webkit-slider-thumb { appearance: none; width: 18px; height: 18px; margin-top: -7px; border: 2px solid var(--accent); border-radius: 50%; background: var(--paper); box-shadow: 0 2px 3px #14251d20; }
+.range-setting input[type="range"]::-moz-range-track { height: 4px; border-radius: 2px; background: var(--range-track); }
+.range-setting input[type="range"]::-moz-range-progress { height: 4px; border-radius: 2px; background: var(--accent); }
+.range-setting input[type="range"]::-moz-range-thumb { width: 14px; height: 14px; border: 2px solid var(--accent); border-radius: 50%; background: var(--paper); box-shadow: 0 2px 3px #14251d20; }
+.range-setting input[type="range"]:focus-visible { outline: none; }
+.range-setting input[type="range"]:focus-visible::-webkit-slider-thumb { outline: 2px solid var(--accent); outline-offset: 3px; }
+.range-setting input[type="range"]:focus-visible::-moz-range-thumb { outline: 2px solid var(--accent); outline-offset: 3px; }
+.range-setting input[type="range"]:active::-webkit-slider-thumb { background: var(--accent-soft); }
+.range-setting input[type="range"]:active::-moz-range-thumb { background: var(--accent-soft); }
+.range-limits { display: flex; justify-content: space-between; color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.range-setting output { display: flex; align-items: center; justify-content: center; min-height: 34px; padding: 0 8px; border-radius: 5px; background: var(--panel); color: var(--ink); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* 系统高对比模式保留滑轨与选择标记，不依赖被系统移除的背景渐变。 */
+@media (forced-colors: active) {
+  .theme-choice:has(input:checked) .theme-preview { outline: 2px solid Highlight; outline-offset: 2px; }
+  .range-setting input[type="range"]::-webkit-slider-runnable-track { forced-color-adjust: none; background: CanvasText; }
+  .range-setting input[type="range"]::-moz-range-track { forced-color-adjust: none; background: CanvasText; }
+  .range-setting input[type="range"]::-moz-range-progress { forced-color-adjust: none; background: Highlight; }
+}
 .path-value { color: var(--accent); padding: 12px 14px; background: var(--panel); border-radius: 4px; overflow-wrap: anywhere; line-height: 1.8; }
 .version { font-size: 11px; color: var(--muted); padding-top: 16px; }
 /* 更新沿用阅读设置的纸面与墨绿，仅在下载或安装确认时突出当前动作。 */
