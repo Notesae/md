@@ -25,6 +25,8 @@ const paths: Record<string, string> = {
   moon: '<path d="M16.5 11.2A6.7 6.7 0 0 1 8.8 3.5a6.8 6.8 0 1 0 7.7 7.7Z"/>',
   copy: '<rect x="7" y="7" width="10" height="11" rx="1"/><path d="M13 7V2H3v11h4"/>',
   refresh: '<path d="M17 7a7 7 0 1 0 0 6M17 2v5h-5"/>',
+  // 状态栏以锁表示只读，不使用文字强调。
+  lock: '<rect x="4.5" y="9" width="11" height="8" rx="1.5"/><path d="M7 9V6.5a3 3 0 0 1 6 0V9"/>',
   book: '<path d="M10 5C7 2 4 2 2 3v13c3-1 5 0 8 2 3-2 5-3 8-2V3c-3-1-5 0-8 2Zm0 0v13"/>',
 };
 

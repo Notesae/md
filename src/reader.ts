@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { ReaderDocument, ReadingPosition } from "./types";
 import { findMatches } from "./search";
 import { icon } from "./icons";
+import { centerOf, glideTo, topOf } from "./glide";
 import "katex/dist/katex.min.css";
 
 /** 用一帧让出主线程，保证长文构建期间仍可处理切换、滚动和关闭。 */
@@ -267,7 +268,8 @@ export class Reader {
     this.matchIndex = (this.matchIndex + step + this.ranges.length) % this.ranges.length;
     const range = this.ranges[this.matchIndex];
     CSS.highlights.set("current-match", new Highlight(range));
-    range.startContainer.parentElement?.scrollIntoView({ block: "center" });
+    // 结果循环切换，正文滑到结果所在行的中央，而不是瞬间跳过去。
+    void glideTo(this.viewport, centerOf(this.viewport, () => range.getBoundingClientRect()));
     this.onSearch(this.ranges.length, this.matchIndex, truncated);
   }
 
@@ -276,8 +278,9 @@ export class Reader {
     await this.finished;
     if (epoch !== this.epoch) return;
     const heading = this.article.querySelector<HTMLElement>(`#${CSS.escape(id)}`);
-    heading?.scrollIntoView({ block: "start" });
-    if (heading) { heading.tabIndex = -1; heading.focus({ preventScroll: true }); }
+    if (!heading) return;
+    heading.tabIndex = -1; heading.focus({ preventScroll: true });
+    await glideTo(this.viewport, topOf(this.viewport, heading));
   }
 
   /** 只命中视口内的一个块，目录用有序元数据二分定位，滚动时不扫描全文布局。 */

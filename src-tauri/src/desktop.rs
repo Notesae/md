@@ -952,8 +952,126 @@ fn accept_paths(app: &tauri::AppHandle, paths: impl Iterator<Item = PathBuf>) {
     }
 }
 
-/// 以原生对话框选择或恢复应用目录；取消退出，绝不静默回退系统盘。
-fn bootstrap() -> Result<Option<Runtime>, String> {
+/// 首次启动或数据位置失效时进入引导页；页面确认前持有实例锁，不创建主 WebView，也不初始化任何数据根。
+struct SetupContext {
+    lock: Option<fs::File>,
+    bootstrap_path: PathBuf,
+    notice: Option<String>,
+    profile: PathBuf,
+}
+
+type SharedSetup = Arc<Mutex<SetupContext>>;
+
+enum Startup {
+    Ready(Runtime),
+    Setup(SetupContext),
+}
+
+/// 引导页展示的候选位置；问题与可写性在确认时会重新检查。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SetupTarget {
+    parent: String,
+    root: String,
+    existing: bool,
+    writable: bool,
+    free_bytes: Option<u64>,
+    system_drive: bool,
+    problem: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SetupInfo {
+    notice: Option<String>,
+    default_target: Option<SetupTarget>,
+    default_error: Option<String>,
+}
+
+/// 选中已有 MD 目录时直接沿用，否则在所选父目录中建立 MdReader。
+fn setup_root(parent: &Path) -> PathBuf {
+    if parent.join("owner.json").exists() {
+        parent.to_owned()
+    } else {
+        parent.join("MdReader")
+    }
+}
+
+/// 默认数据位置与应用程序放在同一目录，便于整体携带或一并找到。
+fn default_parent() -> Result<PathBuf, String> {
+    let exe = std::env::current_exe().map_err(|e| format!("无法确定应用所在位置：{e}"))?;
+    let folder = exe.parent().ok_or("无法确定应用所在位置。")?;
+    dunce::canonicalize(folder).map_err(|e| format!("无法确定应用所在位置：{e}"))
+}
+
+/// 只读检查候选位置：路径边界、已有归属、可写性与剩余空间；写入探测使用即删的临时文件。
+fn inspect_target(parent: &Path) -> SetupTarget {
+    let mut target = SetupTarget {
+        parent: parent.to_string_lossy().into_owned(),
+        root: setup_root(parent).to_string_lossy().into_owned(),
+        existing: false,
+        writable: false,
+        free_bytes: None,
+        system_drive: false,
+        problem: None,
+    };
+    let root = match migration::normalized_path(&setup_root(parent)) {
+        Ok(root) => root,
+        Err(error) => {
+            target.problem = Some(error);
+            return target;
+        }
+    };
+    target.root = root.to_string_lossy().into_owned();
+    target.system_drive = std::env::var("SystemDrive").is_ok_and(|drive| {
+        target
+            .root
+            .to_ascii_uppercase()
+            .starts_with(&drive.to_ascii_uppercase())
+    });
+    if root.join("owner.json").exists() {
+        match storage::read_owner(&root) {
+            Ok(_) => target.existing = true,
+            Err(error) => target.problem = Some(error),
+        }
+    } else if fs::read_dir(&root).is_ok_and(|mut entries| entries.next().is_some()) {
+        target.problem = Some("这个位置已有其他文件，且不是 MD 的数据目录。请换一个位置。".into());
+    }
+    if let Some(probe) = root.ancestors().find(|path| path.is_dir()) {
+        target.writable = tempfile::NamedTempFile::new_in(probe).is_ok();
+        target.free_bytes = fs2::available_space(probe).ok();
+    }
+    if !target.writable && target.problem.is_none() {
+        target.problem = Some("没有写入权限。请选择其他位置。".into());
+    }
+    target
+}
+
+/// 引导页 WebView 的临时数据优先放在应用目录旁，确认后删除；应用目录不可写时才使用启动定位目录。
+fn setup_profile(location: &Path) -> PathBuf {
+    if let Ok(path) = default_parent().map(|folder| folder.join(".md-setup")) {
+        if fs::create_dir_all(&path).is_ok() && tempfile::NamedTempFile::new_in(&path).is_ok() {
+            return path;
+        }
+    }
+    location.join("setup-webview")
+}
+
+/// 引导窗口关闭后 WebView 进程会稍后退出，有限重试删除；残留会在下次进入引导时覆盖使用。
+fn remove_setup_profile(profile: PathBuf) {
+    std::thread::spawn(move || {
+        for _ in 0..40 {
+            match fs::remove_dir_all(&profile) {
+                Ok(()) => return,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(250)),
+            }
+        }
+    });
+}
+
+/// 读取并恢复已有引导记录；没有记录或记录失效时进入引导页，绝不静默回退系统盘。
+fn bootstrap() -> Result<Startup, String> {
     let location = std::env::var_os("MD_BOOTSTRAP_DIR")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("LOCALAPPDATA").map(|p| PathBuf::from(p).join("MdReader")))
@@ -968,6 +1086,7 @@ fn bootstrap() -> Result<Option<Runtime>, String> {
     lock.try_lock_exclusive()
         .map_err(|_| "MD 已经运行，请先关闭其他实例。")?;
     let path = location.join("bootstrap.json");
+    let mut notice = None;
     if path.exists() || path.with_file_name("bootstrap.recovery.json").exists() {
         let restored = (|| -> Result<Runtime, String> {
             let record = migration::resume_migration(&path)?;
@@ -993,55 +1112,170 @@ fn bootstrap() -> Result<Option<Runtime>, String> {
             ))
         })();
         match restored {
-            Ok(runtime) => return Ok(Some(runtime)),
-            Err(error) => {
-                let result = rfd::MessageDialog::new().set_title("MD · 需要恢复数据位置")
-                    .set_description(format!("{error}\n\n选择“是”重新选择已有数据目录或新建；选择“否”退出。原目录不会被删除。"))
-                    .set_buttons(rfd::MessageButtons::YesNo).show();
-                if result != rfd::MessageDialogResult::Yes {
-                    return Ok(None);
-                }
-            }
+            Ok(runtime) => return Ok(Startup::Ready(runtime)),
+            Err(error) => notice = Some(format!("{error}原目录不会被删除。")),
         }
     }
-    let Some(selected) = rfd::FileDialog::new()
-        .set_title("选择 MD 数据位置（已有 MD 目录，或新位置的父目录）")
+    let profile = setup_profile(&location);
+    Ok(Startup::Setup(SetupContext {
+        lock: Some(lock),
+        bootstrap_path: path,
+        notice,
+        profile,
+    }))
+}
+
+#[tauri::command]
+fn setup_info(setup: tauri::State<'_, SharedSetup>) -> Result<SetupInfo, String> {
+    let notice = setup.lock().map_err(|_| "引导状态不可用")?.notice.clone();
+    let (default_target, default_error) = match default_parent() {
+        Ok(parent) => (Some(inspect_target(&parent)), None),
+        Err(error) => (None, Some(error)),
+    };
+    Ok(SetupInfo {
+        notice,
+        default_target,
+        default_error,
+    })
+}
+
+#[tauri::command]
+async fn setup_choose() -> Result<Option<SetupTarget>, String> {
+    let Some(selected) = rfd::AsyncFileDialog::new()
+        .set_title("选择数据位置（已有 MD 数据目录，或新位置的父目录）")
         .pick_folder()
+        .await
     else {
         return Ok(None);
     };
-    let root = if selected.join("owner.json").exists() {
-        selected
-    } else {
-        selected.join("MdReader")
+    let selected = selected.path().to_owned();
+    tauri::async_runtime::spawn_blocking(move || inspect_target(&selected))
+        .await
+        .map(Some)
+        .map_err(|e| e.to_string())
+}
+
+/// 确认后才初始化数据根并写入引导记录；返回 false 表示需要用户确认重建浏览器数据。
+#[tauri::command]
+async fn setup_confirm(
+    app: tauri::AppHandle,
+    setup: tauri::State<'_, SharedSetup>,
+    parent: String,
+    rebuild_webview: bool,
+) -> Result<bool, String> {
+    let setup = setup.inner().clone();
+    let prepared = tauri::async_runtime::spawn_blocking(
+        move || -> Result<Option<(Runtime, PathBuf)>, String> {
+            let mut context = setup.lock().map_err(|_| "引导状态不可用")?;
+            let target = inspect_target(Path::new(&parent));
+            if let Some(problem) = target.problem {
+                return Err(problem);
+            }
+            let root = PathBuf::from(target.root);
+            let owner = storage::initialize_root(&root)?;
+            let state = storage::load_state(&root)?;
+            let path = context.bootstrap_path.clone();
+            let previous = storage::load_bootstrap(&path)
+                .ok()
+                .filter(|record| record.instance_id == owner.instance_id && record.root == root);
+            if previous
+                .as_ref()
+                .is_some_and(|record| record.force_recovery)
+            {
+                if !rebuild_webview {
+                    return Ok(None);
+                }
+                migration::wait_for_sessions(&[], &root.join("webview"))?;
+                storage::clear_managed_child(&root, "webview")?;
+            }
+            let mut record = previous.unwrap_or(Bootstrap {
+                format_version: 1,
+                root: root.clone(),
+                instance_id: owner.instance_id,
+                ..Default::default()
+            });
+            record.force_recovery = false;
+            storage::save_bootstrap(&path, &record)?;
+            let lock = context.lock.take().ok_or("引导已完成，请重新启动 MD。")?;
+            Ok(Some((
+                Runtime::new(root, state, lock, path),
+                context.profile.clone(),
+            )))
+        },
+    )
+    .await
+    .map_err(|e| e.to_string())??;
+    let Some((runtime, profile)) = prepared else {
+        return Ok(false);
     };
-    let owner = storage::initialize_root(&root)?;
-    let state = storage::load_state(&root)?;
-    let previous = storage::load_bootstrap(&path)
-        .ok()
-        .filter(|record| record.instance_id == owner.instance_id && record.root == root);
-    if previous
-        .as_ref()
-        .is_some_and(|record| record.force_recovery)
-    {
-        let choice = rfd::MessageDialog::new().set_title("MD · 重建浏览器数据")
-            .set_description("只清理此 MD 数据目录的浏览器数据并重新创建阅读窗口。偏好、历史和原始文章保持原位。是否继续？")
-            .set_buttons(rfd::MessageButtons::YesNo).show();
-        if choice != rfd::MessageDialogResult::Yes {
-            return Ok(None);
-        }
-        migration::wait_for_sessions(&[], &root.join("webview"))?;
-        storage::clear_managed_child(&root, "webview")?;
+    launch_main(&app, runtime)?;
+    if let Some(window) = app.get_webview_window("setup") {
+        let _ = window.destroy();
     }
-    let mut record = previous.unwrap_or(Bootstrap {
-        format_version: 1,
-        root: root.clone(),
-        instance_id: owner.instance_id,
-        ..Default::default()
+    remove_setup_profile(profile);
+    Ok(true)
+}
+
+/// 仅允许应用自身页面与开发服务器导航，主窗口和引导窗口共用。
+fn allowed_navigation(url: &tauri::Url) -> bool {
+    (url.scheme() == "tauri" && url.host_str() == Some("localhost"))
+        || (url.scheme() == "http"
+            && (url.host_str() == Some("tauri.localhost")
+                || (url.host_str() == Some("127.0.0.1") && url.port() == Some(1420))))
+}
+
+/// 用已确认的数据根注册状态并创建唯一主 WebView；创建失败时回滚迁移或标记下次恢复。
+fn launch_main(app: &tauri::AppHandle, mut runtime: Runtime) -> Result<(), String> {
+    let data_directory = runtime.root.join("webview");
+    let width = runtime.state.window.width.clamp(800, 3840) as f64;
+    let height = runtime.state.window.height.clamp(580, 2160) as f64;
+    let maximized = runtime.state.window.maximized;
+    let bootstrap_path = runtime.bootstrap_path.clone();
+    for argument in std::env::args().skip(1) {
+        if let Ok(path) = fs::canonicalize(argument) {
+            if document::is_markdown(&path) {
+                runtime.state.last_file = Some(path.to_string_lossy().into_owned());
+                runtime.allowed_files.insert(path);
+                break;
+            }
+        }
+    }
+    let maintenance = Arc::new(Mutex::new(()));
+    app.manage(UpdateService::new(
+        runtime.root.clone(),
+        maintenance.clone(),
+    ));
+    app.manage(Arc::new(Mutex::new(runtime)));
+    app.manage(Tasks {
+        generation: Arc::new(AtomicU64::new(0)),
+        parser: Arc::new(tokio::sync::Semaphore::new(1)),
+        images: Arc::new(tokio::sync::Semaphore::new(2)),
+        storage_generation: Arc::new(AtomicU64::new(0)),
+        folder_generation: Arc::new(AtomicU64::new(0)),
+        maintenance,
     });
-    record.force_recovery = false;
-    storage::save_bootstrap(&path, &record)?;
-    Ok(Some(Runtime::new(root, state, lock, path)))
+    let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+        .title("MD · Markdown 阅读器")
+        // 窗口标题与阅读工具在 WebView 内合并呈现，保留系统任务栏标题。
+        .decorations(false)
+        .inner_size(width, height)
+        .min_inner_size(800.0, 580.0)
+        .maximized(maximized)
+        .on_navigation(allowed_navigation)
+        .data_directory(data_directory)
+        .build();
+    if let Err(error) = window {
+        if let Ok(mut record) = storage::load_bootstrap(&bootstrap_path) {
+            if record.migration.is_some() {
+                let _ = migration::rollback(&bootstrap_path, &error.to_string());
+            } else {
+                record.force_recovery = true;
+                let _ = storage::save_bootstrap(&bootstrap_path, &record);
+            }
+        }
+        return Err(error.to_string());
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1160,16 +1394,29 @@ pub fn run() {
                     }
                 }),
             );
-            if let Some(window) = app.get_webview_window("main") {
+            if let Some(window) = app
+                .get_webview_window("main")
+                .or_else(|| app.get_webview_window("setup"))
+            {
                 let _ = window.set_focus();
             }
         }))
         .setup(|app| {
-            let mut runtime = match bootstrap() {
-                Ok(Some(runtime)) => runtime,
-                Ok(None) => {
-                    app.handle().exit(0);
-                    return Ok(());
+            match bootstrap() {
+                Ok(Startup::Ready(runtime)) => launch_main(app.handle(), runtime)?,
+                Ok(Startup::Setup(context)) => {
+                    // 引导页使用独立的临时 WebView 数据目录，用户确认后才创建主窗口。
+                    let profile = context.profile.clone();
+                    app.manage::<SharedSetup>(Arc::new(Mutex::new(context)));
+                    WebviewWindowBuilder::new(app, "setup", WebviewUrl::App("setup.html".into()))
+                        .title("MD · 选择数据位置")
+                        .decorations(false)
+                        .inner_size(760.0, 600.0)
+                        .min_inner_size(640.0, 540.0)
+                        .center()
+                        .on_navigation(allowed_navigation)
+                        .data_directory(profile)
+                        .build()?;
                 }
                 Err(error) => {
                     rfd::MessageDialog::new()
@@ -1178,64 +1425,7 @@ pub fn run() {
                         .set_level(rfd::MessageLevel::Error)
                         .show();
                     app.handle().exit(1);
-                    return Ok(());
                 }
-            };
-            let data_directory = runtime.root.join("webview");
-            let width = runtime.state.window.width.clamp(800, 3840) as f64;
-            let height = runtime.state.window.height.clamp(580, 2160) as f64;
-            let maximized = runtime.state.window.maximized;
-            let bootstrap_path = runtime.bootstrap_path.clone();
-            for argument in std::env::args().skip(1) {
-                if let Ok(path) = fs::canonicalize(argument) {
-                    if document::is_markdown(&path) {
-                        runtime.state.last_file = Some(path.to_string_lossy().into_owned());
-                        runtime.allowed_files.insert(path);
-                        break;
-                    }
-                }
-            }
-            let maintenance = Arc::new(Mutex::new(()));
-            app.manage(UpdateService::new(
-                runtime.root.clone(),
-                maintenance.clone(),
-            ));
-            app.manage(Arc::new(Mutex::new(runtime)));
-            app.manage(Tasks {
-                generation: Arc::new(AtomicU64::new(0)),
-                parser: Arc::new(tokio::sync::Semaphore::new(1)),
-                images: Arc::new(tokio::sync::Semaphore::new(2)),
-                storage_generation: Arc::new(AtomicU64::new(0)),
-                folder_generation: Arc::new(AtomicU64::new(0)),
-                maintenance,
-            });
-            let window =
-                WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
-                    .title("MD · Markdown 阅读器")
-                    // 窗口标题与阅读工具在 WebView 内合并呈现，保留系统任务栏标题。
-                    .decorations(false)
-                    .inner_size(width, height)
-                    .min_inner_size(800.0, 580.0)
-                    .maximized(maximized)
-                    .on_navigation(|url| {
-                        (url.scheme() == "tauri" && url.host_str() == Some("localhost"))
-                            || (url.scheme() == "http"
-                                && (url.host_str() == Some("tauri.localhost")
-                                    || (url.host_str() == Some("127.0.0.1")
-                                        && url.port() == Some(1420))))
-                    })
-                    .data_directory(data_directory)
-                    .build();
-            if let Err(error) = window {
-                if let Ok(mut record) = storage::load_bootstrap(&bootstrap_path) {
-                    if record.migration.is_some() {
-                        let _ = migration::rollback(&bootstrap_path, &error.to_string());
-                    } else {
-                        record.force_recovery = true;
-                        let _ = storage::save_bootstrap(&bootstrap_path, &record);
-                    }
-                }
-                return Err(error.into());
             }
             Ok(())
         })
@@ -1293,6 +1483,9 @@ pub fn run() {
             migrate_storage,
             reset_webview,
             app_ready,
+            setup_info,
+            setup_choose,
+            setup_confirm,
             retry_storage_cleanup,
             get_update_status,
             check_for_updates,

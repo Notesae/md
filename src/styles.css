@@ -1,8 +1,8 @@
 /* 书页沉浸：窗口外框是暖色桌面，正文是一张抬起的纸；墨绿只用于当前位置与主要操作，使用本地字体保证离线启动。 */
 :root { color-scheme: light; --desk: #f1eee6; --paper: #fdfcf9; --panel: #f5f2eb; --surface: #e7e3d9; --ink: #25302b; --muted: #626963; --line: #e3dfd5; --accent: #2e6a4e; --accent-soft: #e2ece3; --code: #f4f1ea; --danger: #9a3b2e; --sheet-edge: #e2ddd2; --shadow: #3a2f1a14; --body-size: 18px; --body-width: 780px; --radius: 8px; --radius-lg: 12px; --serif: "Palatino Linotype", "Book Antiqua", "Source Han Serif SC", "SimSun", serif; font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif; font-size: 13px; color: var(--ink); background: var(--desk); }
 :root[data-theme="dark"] { color-scheme: dark; --desk: #141917; --paper: #1c221f; --panel: #232a26; --surface: #29312c; --ink: #e3e7df; --muted: #9ba59d; --line: #2f3833; --accent: #93c6a4; --accent-soft: #24372c; --code: #212824; --danger: #f2a295; --sheet-edge: #29312c; --shadow: #00000059; }
-/* 状态反馈、弹层和目录共享节奏；正文与主题整页不做入场动画。 */
-:root { --motion-feedback: 120ms; --motion-enter: 140ms; --motion-exit: 90ms; --motion-drawer: 160ms; --ease-enter: cubic-bezier(.16, 1, .3, 1); --ease-exit: ease-in; }
+/* 动效令牌：按压 120ms、反馈 200ms、面板与浮层 360–520ms、整页 680ms；纸张曲线快起慢停，推拉曲线起止都缓。说明见 docs/MOTION.md。 */
+:root { --dur-press: 120ms; --dur-quick: 200ms; --dur-base: 360ms; --dur-slow: 520ms; --dur-page: 680ms; --dur-theme: 900ms; --ease-standard: cubic-bezier(.2, 0, 0, 1); --ease-paper: cubic-bezier(.22, 1, .36, 1); --ease-glide: cubic-bezier(.65, 0, .35, 1); --ease-exit: cubic-bezier(.55, 0, .75, .1); --lift: 10px; --slide: 14px; --shadow-rest: 0 0 0 1px var(--sheet-edge), 0 1px 2px var(--shadow); --shadow-lift: 0 0 0 1px var(--sheet-edge), 0 6px 18px var(--shadow), 0 2px 4px var(--shadow); --shadow-float: 0 0 0 1px var(--sheet-edge), 0 18px 48px var(--shadow), 0 4px 12px var(--shadow); }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 body { margin: 0; overflow: hidden; background: var(--desk); }
@@ -18,6 +18,18 @@ button svg { flex-shrink: 0; }
 #reading-pane:focus-visible { outline: none; box-shadow: 0 0 0 1px var(--accent), 0 2px 10px var(--shadow); }
 :focus:not(:focus-visible) { outline: none; }
 * { scrollbar-width: thin; scrollbar-color: var(--surface) transparent; }
+/* 覆盖式滚动条：脚本接管后隐藏原生滚动条，拇指浮在内容之上，不占布局宽度。 */
+.overlay-scrollbars * { scrollbar-width: none; }
+.scroll-layer { position: fixed; inset: 0; z-index: 40; pointer-events: none; }
+.scroll-rail { position: fixed; overflow: hidden; opacity: 0; }
+.scroll-rail.visible { opacity: 1; }
+.scroll-thumb { position: absolute; top: 0; left: 0; border-radius: 4px; background: color-mix(in srgb, var(--ink) 26%, transparent); }
+.scroll-thumb.y { left: auto; width: 6px; }
+.scroll-thumb.x { top: auto; height: 6px; }
+.scroll-rail.visible .scroll-thumb { pointer-events: auto; }
+.scroll-thumb:hover, .scroll-thumb.dragging { background: color-mix(in srgb, var(--ink) 42%, transparent); }
+.scroll-thumb.y:is(:hover, .dragging) { width: 9px; }
+.scroll-thumb.x:is(:hover, .dragging) { height: 9px; }
 input { accent-color: var(--accent); caret-color: var(--accent); }
 input::placeholder { color: var(--muted); opacity: 1; }
 .app-shell { position: relative; overflow: clip; height: 100dvh; display: grid; grid-template-columns: 240px minmax(0, 1fr) 216px; grid-template-rows: 46px minmax(0, 1fr) 30px; background: var(--desk); }
@@ -67,7 +79,10 @@ input::placeholder { color: var(--muted); opacity: 1; }
 .section-title { display: flex; align-items: center; justify-content: space-between; min-height: 30px; gap: 8px; padding: 0 4px 0 10px; margin-bottom: 4px; color: var(--muted); }
 .section-title h2 { font-size: 12px; font-weight: 600; letter-spacing: .06em; margin: 0; }
 .section-title > span { font-size: 12px; font-variant-numeric: tabular-nums; }
-.empty-small { padding: 4px 10px; color: var(--muted); font-size: 13px; line-height: 1.85; }
+/* 空状态与列表文字共用 10px 左缘；说明一句话，操作紧随其后，不用换行拼凑诗句。 */
+.empty-small, .empty-state p { margin: 0; padding: 2px 10px 6px; color: var(--muted); font-size: 12.5px; line-height: 1.75; text-wrap: pretty; }
+.empty-state .text-button { gap: 6px; min-height: 30px; margin-left: 6px; padding: 4px; font-size: 13px; }
+.empty-state .text-button svg { width: 15px; height: 15px; }
 .file-row, .directory summary { width: 100%; display: flex; gap: 9px; align-items: center; border: 0; background: transparent; text-align: left; padding: 7px 10px; border-radius: var(--radius); min-height: 34px; font-size: 13px; }
 .file-row svg { width: 16px; height: 16px; color: var(--muted); }
 .file-row > span, .directory summary > span { text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
@@ -78,9 +93,8 @@ input::placeholder { color: var(--muted); opacity: 1; }
 .directory summary { cursor: pointer; gap: 6px; list-style: none; padding-left: 4px; }
 .directory summary::-webkit-details-marker { display: none; }
 .directory summary svg { width: 15px; height: 15px; flex-shrink: 0; color: var(--muted); }
-.directory[open] > summary > svg:first-child { transform: rotate(90deg); }
+.directory[open] > summary > svg:first-child { rotate: 90deg; }
 .directory-children { padding-left: 10px; margin-left: 11px; border-left: 1px solid var(--line); }
-.sidebar-bottom { margin-top: auto; padding: 16px 10px; color: var(--muted); font-size: 12px; }
 .more-recents { margin: 6px 10px; font-size: 12px; }
 /* 阅读区即纸面：圆角与极浅投影把正文从桌面上托起，侧栏收起时在边缘留出同样的桌面。 */
 .reading-pane { grid-column: 2; grid-row: 2; overflow: auto; position: relative; scroll-padding-top: 40px; background: var(--paper); border-radius: var(--radius-lg); box-shadow: 0 0 0 1px var(--sheet-edge), 0 2px 10px var(--shadow); }
@@ -89,24 +103,32 @@ input::placeholder { color: var(--muted); opacity: 1; }
 .welcome-view { max-width: 640px; margin: clamp(70px, 14vh, 150px) auto 60px; padding: 0 60px; }
 .welcome-book { display: inline-flex; padding: 12px; margin-bottom: 30px; color: var(--accent); background: var(--accent-soft); border-radius: 14px; }
 .welcome-book svg { width: 30px; height: 30px; stroke-width: 1.3; }
-.welcome-view h1 { font: 500 clamp(34px, 4vw, 48px)/1.45 var(--serif); letter-spacing: .03em; margin: 0 0 22px; }
-.welcome-view p { color: var(--muted); font-size: 15px; line-height: 1.9; margin-bottom: 36px; }
-.primary.large { padding: 12px 18px; min-height: 46px; font-size: 14px; border-radius: 10px; }
-kbd { font: 11px "Segoe UI", sans-serif; opacity: .85; margin-left: 14px; padding: 3px 6px; border-radius: 4px; background: color-mix(in srgb, currentColor 16%, transparent); }
-.welcome-hint { color: var(--muted); font-size: 13px; margin-top: 16px; }
-.welcome-hint button { font-size: 13px; }
+.welcome-view h1 { font: 500 clamp(32px, 3.6vw, 44px)/1.4 var(--serif); letter-spacing: .02em; margin: 0 0 18px; }
+.welcome-view > p { color: var(--muted); font-size: 15px; line-height: 1.85; margin: 0 0 32px; }
+/* 两个入口并排，快捷键单列成表，不塞进按钮里抢文字。 */
+.welcome-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.primary.large, .secondary.large { padding: 10px 18px 10px 16px; min-height: 44px; font-size: 14px; border-radius: 10px; }
+:is(.primary, .secondary).large svg { width: 18px; height: 18px; }
+.welcome-keys { display: grid; grid-template-columns: max-content 1fr; align-items: center; gap: 8px 16px; margin: 36px 0 0; padding-top: 22px; border-top: 1px solid var(--line); font-size: 13px; color: var(--muted); }
+.welcome-keys dt { display: flex; gap: 4px; }
+.welcome-keys dd { margin: 0; }
+kbd { display: inline-flex; align-items: center; justify-content: center; min-width: 24px; height: 22px; padding: 0 6px; font: 600 11px/1 "Segoe UI", sans-serif; color: var(--ink); background: var(--paper); border: 1px solid var(--sheet-edge); border-bottom-width: 2px; border-radius: 5px; }
 /* 目录用细竖线串起层级，当前章节以墨绿短线和字色标出，不铺色块。 */
 .outline { grid-column: 3; grid-row: 2; min-width: 0; padding: 10px 12px 0 14px; display: flex; flex-direction: column; overflow: hidden; background: var(--desk); }
 #outline-list { overflow: auto; margin-top: 2px; padding-left: 2px; }
 .outline-link { position: relative; display: block; width: 100%; border: 0; background: none; text-align: left; font-size: 13px; color: var(--muted); padding: 6px 8px 6px calc(12px + var(--level) * 12px); line-height: 1.6; border-radius: 0 6px 6px 0; overflow-wrap: anywhere; box-shadow: inset 1px 0 var(--line); }
 .outline-link:hover { color: var(--ink); background: var(--surface); }
-.outline-link.active { color: var(--accent); font-weight: 600; box-shadow: inset 2px 0 var(--accent); }
+.outline-link.active { color: var(--accent); font-weight: 600; }
+/* 当前章节短线独立于目录项，切换时沿竖线滑到新位置。 */
+#outline-list { position: relative; }
+.outline-marker { position: absolute; top: 0; left: 2px; width: 2px; border-radius: 1px; background: var(--accent); opacity: 0; pointer-events: none; }
+.outline-marker.shown { opacity: 1; }
 .outline-bottom { padding: 18px 4px 18px 10px; margin-top: auto; display: flex; flex-wrap: wrap; justify-content: space-between; font-size: 12px; color: var(--muted); gap: 10px; font-variant-numeric: tabular-nums; }
 .progress-track { width: 100%; background: var(--surface); height: 3px; border-radius: 2px; overflow: hidden; }
 #progress-fill { background: var(--accent); height: 3px; width: 0; border-radius: 2px; }
 .statusbar { grid-column: 1 / -1; grid-row: 3; display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 0 16px 0 22px; font-size: 12px; color: var(--muted); user-select: none; }
-.status-left { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
-.status-dot { width: 3px; height: 3px; background: var(--muted); border-radius: 50%; }
+.status-left { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.status-left svg { width: 13px; height: 13px; stroke-width: 1.7; }
 #document-status { margin-left: auto; text-align: right; font-variant-numeric: tabular-nums; }
 .statusbar .text-button { min-height: 24px; font-size: 12px; }
 .search-bar { position: sticky; top: 0; z-index: 3; display: block; height: 0; }
@@ -126,7 +148,7 @@ kbd { font: 11px "Segoe UI", sans-serif; opacity: .85; margin-left: 14px; paddin
 .search-controls .icon-button svg { width: 17px; height: 17px; }
 .search-controls .icon-button:hover:not(:disabled) { color: var(--accent); background: var(--accent-soft); }
 #search-count { flex-shrink: 0; color: var(--muted); font-size: 12px; white-space: nowrap; min-width: 42px; text-align: right; font-variant-numeric: tabular-nums; }
-.notice { position: fixed; bottom: 44px; left: 50%; transform: translateX(-50%); max-width: min(680px, 90vw); display: flex; align-items: center; gap: 16px; padding: 10px 10px 10px 18px; color: var(--ink); background: var(--paper); border: 1px solid var(--sheet-edge); border-radius: var(--radius-lg); box-shadow: 0 10px 30px var(--shadow); z-index: 10; font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
+.notice { position: fixed; bottom: 44px; left: 50%; transform: translateX(-50%); max-width: min(680px, 90vw); display: flex; align-items: center; gap: 16px; padding: 10px 10px 10px 18px; color: var(--ink); background: var(--paper); border: 1px solid var(--sheet-edge); border-radius: var(--radius-lg); box-shadow: var(--shadow-float); z-index: 10; font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 .no-sidebar .app-shell { grid-template-columns: 0 minmax(0, 1fr) 216px; }
 .no-sidebar .sidebar { visibility: hidden; }
@@ -298,31 +320,34 @@ kbd { font: 11px "Segoe UI", sans-serif; opacity: .85; margin-left: 14px; paddin
 /* 数值、单位和步进组合成一个控件，使用组焦点代替输入框与原生箭头的双重边界。 */
 .cache-budget-row { align-items: flex-start; }
 .budget-setting { display: grid; justify-items: end; gap: 8px; width: min(232px, 48%); flex-shrink: 0; color: var(--muted); }
-.number-stepper { display: flex; align-items: center; gap: 4px; width: 100%; padding: 3px; border: 1px solid transparent; border-radius: 10px; background: var(--panel); }
-.number-stepper:focus-within { border-color: var(--accent); }
-.number-stepper:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
-.number-stepper:has(input[aria-invalid="true"]) { border-color: var(--danger); }
-.stepper-button { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; flex-shrink: 0; padding: 6px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); }
-.stepper-button svg { width: 18px; height: 18px; }
-.stepper-button:hover:not(:disabled) { color: var(--accent); background: var(--paper); }
+.number-stepper { display: flex; align-items: stretch; width: 100%; height: 36px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--paper); overflow: hidden; }
+/* 组焦点用单层墨绿描边加浅色光晕，不叠加外框；数值与单位居中成一组，读数稳定不跳动。 */
+.number-stepper:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.number-stepper:has(input[aria-invalid="true"]) { border-color: var(--danger); box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 14%, transparent); }
+.stepper-button { display: inline-flex; align-items: center; justify-content: center; width: 36px; flex-shrink: 0; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--muted); }
+.stepper-button:first-child { border-right: 1px solid var(--line); }
+.stepper-button:last-child { border-left: 1px solid var(--line); }
+.stepper-button svg { width: 16px; height: 16px; }
+.stepper-button:hover:not(:disabled) { color: var(--accent); background: var(--panel); }
 .stepper-button:active:not(:disabled) { background: var(--accent-soft); }
-.stepper-button:focus-visible { outline-offset: 0; }
-.budget-value { display: flex; flex: 1; min-width: 0; align-items: center; gap: 5px; padding: 0 8px; border-radius: 7px; background: var(--paper); box-shadow: 0 0 0 1px var(--line); }
-.number-stepper input[type="number"] { appearance: textfield; width: 100%; min-width: 0; height: 30px; padding: 0; border: 0; background: transparent; font-size: 13px; text-align: right; font-variant-numeric: tabular-nums; }
+.stepper-button:focus-visible { outline-offset: -3px; border-radius: 6px; }
+.budget-value { display: flex; flex: 1; min-width: 0; align-items: baseline; justify-content: center; gap: 4px; padding: 0 8px; cursor: text; }
+.number-stepper input[type="number"] { appearance: textfield; width: 5ch; min-width: 0; height: 34px; padding: 0; border: 0; background: transparent; color: var(--ink); font-size: 14px; font-weight: 600; text-align: right; font-variant-numeric: tabular-nums; }
 .number-stepper input::-webkit-inner-spin-button, .number-stepper input::-webkit-outer-spin-button { appearance: none; margin: 0; }
 .number-stepper input:focus-visible { outline: none; }
-.budget-unit, .budget-limit { font-size: 12px; white-space: nowrap; }
+.budget-unit { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.budget-limit { font-size: 12px; white-space: nowrap; }
 .control-error { margin: 0; color: var(--danger); font-size: 12px; line-height: 1.7; }
 @media (forced-colors: active) {
   .segmented-option:has(input:checked) > span { outline: 2px solid Highlight; }
-  .number-stepper:has(input:focus-visible) { outline-color: Highlight; }
+  .number-stepper:focus-within { outline: 2px solid Highlight; outline-offset: 1px; }
   .switch-track { forced-color-adjust: none; border: 1px solid ButtonText; background: Canvas; }
   .switch-track::after { background: ButtonText; }
   .switch-input:checked + .switch-track { border-color: Highlight; background: Highlight; }
   .switch-input:checked + .switch-track::after { background: HighlightText; }
 }
 .migration-residual { padding-top: 12px; }
-dialog { max-width: min(520px, 90vw); max-height: calc(100dvh - 40px); overflow: auto; padding: 28px; border: 1px solid var(--sheet-edge); border-radius: 16px; background: var(--paper); color: var(--ink); box-shadow: 0 24px 64px var(--shadow), 0 2px 8px var(--shadow); opacity: 0; }
+dialog { max-width: min(520px, 90vw); max-height: calc(100dvh - 40px); overflow: auto; padding: 28px; border: 1px solid var(--sheet-edge); border-radius: 16px; background: var(--paper); color: var(--ink); box-shadow: var(--shadow-float); opacity: 0; }
 dialog[open] { opacity: 1; }
 dialog:not([open]), dialog:not([open])::backdrop { pointer-events: none; }
 dialog::backdrop { background: #14251d55; opacity: 0; }
@@ -361,37 +386,109 @@ dialog > .toolbar [inert] { opacity: .45; }
   .welcome-view { padding-inline: 40px; }
   .settings { padding-inline: 24px; }
 }
+/* 纸页动效（详见 docs/MOTION.md）：界面是桌上的纸。纸片被抬起时投影加深、按下时贴回桌面；新的纸从下方轻放、旧的纸滑开；
+   面板像抽屉一样被平稳推拉。正文阅读与滚动期间不播放装饰动画。仅在 no-preference 下启用，语义与焦点从不等待动画。 */
 @media (prefers-reduced-motion: no-preference) {
-  .app-shell { transition: grid-template-columns var(--motion-drawer) var(--ease-enter); }
-  .reading-pane { transition: margin var(--motion-drawer) var(--ease-enter); }
-  .sidebar { transition: visibility 0s linear; }
-  .no-sidebar .sidebar { transition: visibility 0s linear var(--motion-drawer); }
-  @media (min-width: 951px) {
-    .outline { transition: visibility 0s linear; }
-    .no-outline .outline { transition: visibility 0s linear var(--motion-drawer); }
+  /* 一、纸的物理：悬停抬起 1px 并加深投影，按下贴回；颜色变化走较短的标准曲线。 */
+  button, .file-row, .directory summary, .outline-link, .theme-preview, .segmented-option > span, .setup-option, .number-stepper, .search-controls, .folder-controls select, kbd {
+    transition: background-color var(--dur-quick) var(--ease-standard), color var(--dur-quick) var(--ease-standard), border-color var(--dur-quick) var(--ease-standard), box-shadow var(--dur-base) var(--ease-paper), translate var(--dur-base) var(--ease-paper);
   }
-  button { transition: background-color var(--motion-feedback) ease-out, color var(--motion-feedback) ease-out, border-color var(--motion-feedback) ease-out; }
-  button:active { transition-duration: var(--motion-exit); }
-  .switch-track { transition: background-color var(--motion-feedback) ease-out, border-color var(--motion-feedback) ease-out; }
-  .switch-track::after { transition: transform var(--motion-feedback) var(--ease-enter), background-color var(--motion-feedback) ease-out; }
-  #maintenance-status { transition: color var(--motion-feedback) ease-out, background-color var(--motion-feedback) ease-out; }
-  /* 支持离散过渡时保留退场画面，hidden/inert/close 的语义及焦点即时生效。
-     不支持该特性时直接切换；没有动画定时器或迟到回调可覆盖新意图。 */
+  :is(.primary, .secondary, .setup-option):hover:not(:disabled), .theme-choice:hover .theme-preview { translate: 0 -1px; }
+  .secondary:hover:not(:disabled), .setup-option:hover, .theme-choice:hover .theme-preview { box-shadow: var(--shadow-lift); }
+  .setup-option:has(input:checked):hover, .theme-choice:hover:has(input:checked) .theme-preview { box-shadow: 0 0 0 1px var(--accent), 0 6px 18px var(--shadow); }
+  .primary:hover:not(:disabled) { box-shadow: 0 6px 16px color-mix(in srgb, var(--accent) 30%, transparent), 0 1px 2px var(--shadow); }
+  :is(.primary, .secondary, .setup-option):active:not(:disabled) { translate: 0 0; box-shadow: var(--shadow-rest); transition-duration: var(--dur-press); }
+  /* 新成为当前的文章卡片像刚放下的纸片：从略高处落定，投影随之变浅。 */
+  .file-row.active { animation: md-settle var(--dur-slow) var(--ease-paper); }
+  .switch-track { transition: background-color var(--dur-quick) var(--ease-standard); }
+  .switch-track::after { transition: transform var(--dur-base) var(--ease-paper), background-color var(--dur-quick) var(--ease-standard); }
+  .setup-radio { transition: box-shadow var(--dur-base) var(--ease-paper), border-color var(--dur-quick) var(--ease-standard), background-color var(--dur-quick) var(--ease-standard); }
+  .theme-check { transition: opacity var(--dur-quick) var(--ease-standard), translate var(--dur-base) var(--ease-paper); }
+  .theme-choice:not(:has(input:checked)) .theme-check { translate: 0 4px; }
+  #maintenance-status { transition: color var(--dur-quick) var(--ease-standard), background-color var(--dur-quick) var(--ease-standard); }
+  /* 二、位置：目录短线沿竖线滑到新章节；进度条跟随滚动平滑伸缩；代码复制按钮悬停时浮现。 */
+  .outline-marker { transition: opacity var(--dur-quick) var(--ease-standard); }
+  .outline-marker.placed { transition: translate var(--dur-slow) var(--ease-paper), height var(--dur-slow) var(--ease-paper), opacity var(--dur-quick) var(--ease-standard); }
+  #progress-fill { transition: width var(--dur-base) var(--ease-paper); }
+  .code-copy { opacity: 0; transition: opacity var(--dur-quick) var(--ease-standard), background-color var(--dur-quick) var(--ease-standard), color var(--dur-quick) var(--ease-standard); }
+  .prose pre:is(:hover, :focus-within) .code-copy { opacity: 1; }
+  .scroll-rail { transition: opacity var(--dur-base) var(--ease-standard); }
+  .scroll-rail.visible { transition-duration: var(--dur-quick); }
+  .scroll-thumb { transition: width var(--dur-quick) var(--ease-paper), height var(--dur-quick) var(--ease-paper), background-color var(--dur-quick) var(--ease-standard); }
+  /* 三、展开：子目录像折起的纸被拉开，高度与内容一同展开，箭头转向。 */
+  :root { interpolate-size: allow-keywords; }
+  .directory::details-content { block-size: 0; overflow: clip; transition: block-size var(--dur-slow) var(--ease-paper), content-visibility var(--dur-slow) allow-discrete; }
+  .directory[open]::details-content { block-size: auto; }
+  .directory summary > svg:first-child { transition: rotate var(--dur-base) var(--ease-paper); }
+  .directory[open] > .directory-children { animation: md-unfold var(--dur-slow) var(--ease-paper); }
+  /* 四、面板：栏宽用起止都缓的推拉曲线；侧栏内容向自己的边缘退去，回来时稍晚出现，像抽屉先拉开再露出内容。 */
+  .app-shell { transition: grid-template-columns var(--dur-slow) var(--ease-glide); }
+  .reading-pane { transition: margin var(--dur-slow) var(--ease-glide); }
+  .sidebar { transition: opacity var(--dur-base) var(--ease-paper) 120ms, translate var(--dur-slow) var(--ease-paper), visibility 0s linear; }
+  .no-sidebar .sidebar { opacity: 0; translate: calc(var(--slide) * -1) 0; transition: opacity var(--dur-quick) var(--ease-exit), translate var(--dur-base) var(--ease-exit), visibility 0s linear var(--dur-slow); }
+  @media (min-width: 951px) {
+    .outline { transition: opacity var(--dur-base) var(--ease-paper) 120ms, translate var(--dur-slow) var(--ease-paper), visibility 0s linear; }
+    .no-outline .outline { opacity: 0; translate: var(--slide) 0; transition: opacity var(--dur-quick) var(--ease-exit), translate var(--dur-base) var(--ease-exit), visibility 0s linear var(--dur-slow); }
+  }
+  /* 五、页面：欢迎页、设置页与引导页的各部分依次从下方轻放，间隔 40–70ms，像一叠纸逐张摊开。 */
+  .welcome-view:not([hidden]) > *, .settings:not([hidden]) > *, .setup-sheet > * { animation: md-rise var(--dur-page) var(--ease-paper) both; }
+  .welcome-view > :nth-child(2) { animation-delay: 70ms; }
+  .welcome-view > :nth-child(3) { animation-delay: 140ms; }
+  .welcome-view > :nth-child(4) { animation-delay: 210ms; }
+  .welcome-view > :nth-child(n + 5) { animation-delay: 280ms; }
+  .settings > :nth-child(2) { animation-delay: 40ms; }
+  .settings > :nth-child(3) { animation-delay: 80ms; }
+  .settings > :nth-child(4) { animation-delay: 130ms; }
+  .settings > :nth-child(5) { animation-delay: 190ms; }
+  .settings > :nth-child(6) { animation-delay: 250ms; }
+  .settings > :nth-child(n + 7) { animation-delay: 310ms; }
+  .setup-sheet > :nth-child(2) { animation-delay: 60ms; }
+  .setup-sheet > :nth-child(3) { animation-delay: 120ms; }
+  .setup-sheet > :nth-child(4) { animation-delay: 160ms; }
+  .setup-sheet > :nth-child(5) { animation-delay: 200ms; }
+  .setup-sheet > :nth-child(n + 6) { animation-delay: 280ms; }
+  /* 六、浮层：从来处出现。查找栏像从纸顶拉下的书签；通知是一张从桌沿滑入、带一点歪斜后摆正的纸条；对话框从下方轻放。
+     支持离散过渡时保留退场画面；不支持时直接切换，没有定时器或迟到回调可覆盖新意图。 */
   @supports (transition-behavior: allow-discrete) {
-    .notice, .search-bar, dialog { transition: opacity var(--motion-exit) var(--ease-exit), display var(--motion-exit) allow-discrete; }
-    .notice:not([hidden]), .search-bar:not([hidden]), dialog[open] { transition-duration: var(--motion-enter); transition-timing-function: var(--ease-enter); }
-    dialog { transition-property: opacity, display, overlay; transition-behavior: allow-discrete; }
-    dialog::backdrop { transition: opacity var(--motion-exit) var(--ease-exit); }
-    dialog[open]::backdrop { transition-duration: var(--motion-enter); transition-timing-function: var(--ease-enter); }
-    @starting-style { .notice:not([hidden]), .search-bar:not([hidden]), dialog[open], dialog[open]::backdrop { opacity: 0; } }
+    .notice, .search-bar, dialog { transition: opacity var(--dur-quick) var(--ease-exit), translate var(--dur-quick) var(--ease-exit), rotate var(--dur-quick) var(--ease-exit), display var(--dur-quick) allow-discrete, overlay var(--dur-quick) allow-discrete; }
+    .search-bar:not([hidden]) { transition-duration: var(--dur-slow); transition-timing-function: var(--ease-paper); }
+    .notice:not([hidden]), dialog[open] { transition-duration: var(--dur-page); transition-timing-function: var(--ease-paper); }
+    dialog::backdrop { transition: opacity var(--dur-quick) var(--ease-exit), display var(--dur-quick) allow-discrete, overlay var(--dur-quick) allow-discrete; }
+    dialog[open]::backdrop { transition-duration: var(--dur-base); transition-timing-function: var(--ease-standard); }
+    .notice[hidden], dialog:not([open]) { translate: 0 calc(var(--lift) * .6); }
+    .search-bar[hidden] { translate: 0 calc(var(--lift) * -.6); }
+    @starting-style {
+      .notice:not([hidden]) { opacity: 0; translate: 0 calc(var(--lift) * 1.8); rotate: -1.2deg; }
+      dialog[open] { opacity: 0; translate: 0 calc(var(--lift) * 2); }
+      .search-bar:not([hidden]) { opacity: 0; translate: 0 calc(var(--lift) * -1); }
+      dialog[open]::backdrop { opacity: 0; }
+    }
     @media (max-width: 950px) {
-      .outline { opacity: 0; transform: translateX(8px); transition: opacity var(--motion-exit) var(--ease-exit), transform var(--motion-exit) var(--ease-exit), display var(--motion-exit) allow-discrete; }
-      .outline-drawer .outline { opacity: 1; transform: none; transition-duration: var(--motion-drawer); transition-timing-function: var(--ease-enter); }
-      @starting-style { .outline-drawer .outline { opacity: 0; transform: translateX(8px); } }
+      .outline { opacity: 0; translate: var(--slide) 0; transition: opacity var(--dur-quick) var(--ease-exit), translate var(--dur-quick) var(--ease-exit), display var(--dur-quick) allow-discrete; }
+      .outline-drawer .outline { opacity: 1; translate: none; transition-duration: var(--dur-slow); transition-timing-function: var(--ease-paper); }
+      @starting-style { .outline-drawer .outline { opacity: 0; translate: var(--slide) 0; } }
     }
   }
+  /* 七、主题：新配色像一道斜光从右侧（切换按钮所在一侧）缓缓扫过整窗，旧配色留在下面不淡出，没有整窗闪烁。
+     柔边宽约窗宽的四分之一，全程 900ms，起止都缓。 */
+  html[data-transition="theme"]::view-transition-old(root) { animation: none; mix-blend-mode: normal; }
+  html[data-transition="theme"]::view-transition-new(root) {
+    animation: md-light-sweep var(--dur-theme) var(--ease-glide) both; mix-blend-mode: normal;
+    mask-image: linear-gradient(250deg, #000 45%, transparent 55%); mask-size: 260% 100%; mask-repeat: no-repeat;
+  }
+  /* 进入设置时目录随纸上内容一起淡出，回到正文时稍晚浮现。 */
+  @media (min-width: 951px) {
+    .settings-open .outline { opacity: 0; translate: var(--slide) 0; transition: opacity var(--dur-quick) var(--ease-exit), translate var(--dur-base) var(--ease-exit), visibility 0s linear var(--dur-base); }
+  }
 }
-/* 明确移除过渡属性，运行中切换偏好也会取消已开始的过渡。 */
+@keyframes md-rise { from { opacity: 0; translate: 0 12px; } }
+@keyframes md-unfold { from { opacity: 0; translate: 0 -6px; } }
+@keyframes md-settle { from { translate: 0 -2px; box-shadow: var(--shadow-lift); } }
+@keyframes md-light-sweep { from { mask-position: 0% 0; } to { mask-position: 100% 0; } }
+@media (forced-colors: active) {
+  .scroll-thumb, .outline-marker { forced-color-adjust: none; background: CanvasText; }
+}
+/* 减少动态时移除全部过渡与动画；运行中切换偏好也会让进行中的过渡立即落到终态。视图过渡与滑行由脚本直接跳过。 */
 @media (prefers-reduced-motion: reduce) {
-  button, .switch-track, .switch-track::after, #maintenance-status, .notice, .search-bar, .outline, .sidebar, .app-shell, .reading-pane, dialog, dialog::backdrop { transition: none; }
+  *, *::before, *::after, ::backdrop { transition: none !important; animation: none !important; }
 }

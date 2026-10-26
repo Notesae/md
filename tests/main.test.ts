@@ -65,7 +65,7 @@ describe("关闭文章的页面与请求边界", () => {
     expect(native.search).toHaveBeenLastCalledWith(""); expect(native.search).not.toHaveBeenCalledWith("阅读");
     expect(document.querySelector("#read-progress")!.textContent).toBe("—");
     expect(document.querySelector("#document-name")!.getAttribute("title")).toBeNull();
-    expect(document.querySelector("#outline-list")!.textContent).toContain("打开文章后");
+    expect(document.querySelector("#outline-list")!.textContent).toContain("打开文章后显示目录");
     expect(document.querySelector("#recent-files")!.textContent).toContain("阅读.md");
     expect(native.title).toHaveBeenLastCalledWith("MD · Markdown 阅读器");
     expect(document.activeElement?.id).toBe("reading-pane");
