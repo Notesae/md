@@ -1,5 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
-  <rect x="4" y="4" width="120" height="120" rx="26" fill="#285940"/>
-  <path d="M24 83V48h10v5c8-10 20-9 24 1 9-11 26-10 26 8v21H74V64c0-10-13-10-13 0v19H51V64c0-10-17-10-17 0v19Z" fill="#f7f2e6"/>
-  <path d="M94 34h10v49H94v-5c-12 12-27 2-27-13s15-25 27-13V34Zm0 31c0-13-17-13-17 0s17 13 17 0Z" fill="#f7f2e6"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">MD 阅读器</title>
+  <desc id="desc">墨绿色圆角底上的双页书形，以中央留白形成字母 M。</desc>
+  <rect x="4" y="4" width="120" height="120" rx="28" fill="#234D3C"/>
+  <!-- 以两页轮廓代替重叠字母，中央保留 6px 书脊空隙，保证小尺寸仍可辨识。 -->
+  <path d="M29 37c13 0 24 5 32 13v42c-8-8-19-13-32-13V37Z" fill="#F6F1E5"/>
+  <path d="M67 50c8-8 19-13 32-13v42c-13 0-24 5-32 13V50Z" fill="#DFE8D9"/>
 </svg>
