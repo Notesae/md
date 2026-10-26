@@ -7,14 +7,23 @@ import { icon } from "./icons";
 import type { StorageSettings } from "./storage-settings";
 import type { UpdateSettings } from "./update-settings";
 import { PreferenceStore } from "./preferences";
+import { installScrollbars } from "./scrollbars";
+import { glideIntoView, glideTo } from "./glide";
 import "./styles.css";
+
+/** 文件夹空状态：没有历史时引导打开，有历史时提示可从上方列表重新打开。 */
+function emptyFolder(hasRecent = false): string {
+  return hasRecent
+    ? '<div class="empty-state"><p>文件夹已关闭，可从上方列表重新打开。</p></div>'
+    : `<div class="empty-state"><p>打开文件夹后，可在此浏览。</p><button class="text-button" data-action="folder">${icon("plus")}打开文件夹</button></div>`;
+}
 
 // 标题栏与阅读工具共用一行；原生拖动区避开按钮，文件名称与路径仍用文本节点呈现。
 const app = document.querySelector<HTMLDivElement>("#app")!;
 app.innerHTML = `<div class="app-shell">
   <header class="toolbar" data-tauri-drag-region="deep">
     <div class="open-actions" data-tauri-drag-region="false"><button class="secondary open-file" data-action="open" title="打开文件 · Ctrl+O">${icon("file")}<span>打开文件</span></button><button class="icon-button" data-action="folder" title="打开文件夹 · Ctrl+Shift+O" aria-label="打开文件夹">${icon("folder")}</button></div>
-    <div class="document-name"><span id="document-name">开始阅读</span><span id="document-description">本地 Markdown</span></div>
+    <div class="document-name"><span id="document-name">MD</span><span id="document-description">Markdown 阅读器</span></div>
     <nav class="view-actions" aria-label="阅读工具" data-tauri-drag-region="false">
       <button class="icon-button" data-action="search" title="搜索正文 · Ctrl+F" aria-label="搜索正文" aria-controls="search-bar" aria-expanded="false" disabled>${icon("search")}</button>
       <button class="icon-button" data-action="sidebar" title="文件侧栏" aria-label="切换文件侧栏">${icon("sidebar")}</button>
@@ -29,21 +38,20 @@ app.innerHTML = `<div class="app-shell">
     </div>
   </header>
   <aside class="sidebar" aria-label="文件导航">
-    <section class="nav-section"><div class="section-title"><h2>文件夹</h2><button class="icon-button small" data-action="folder" aria-label="选择文件夹">${icon("folder")}</button></div><div id="folder-controls" class="folder-controls" hidden><label class="sr-only" for="recent-folder">最近文件夹</label><select id="recent-folder"></select><button class="icon-button small" data-action="close-folder" aria-label="关闭文件夹" title="关闭文件夹，保留文章和最近记录">${icon("close")}</button></div><div id="file-tree"><p class="empty-small">打开文件夹，<br>让笔记保持原来的秩序。</p></div></section>
+    <section class="nav-section"><div class="section-title"><h2>文件夹</h2><button class="icon-button small" data-action="folder" aria-label="选择文件夹">${icon("folder")}</button></div><div id="folder-controls" class="folder-controls" hidden><label class="sr-only" for="recent-folder">最近文件夹</label><select id="recent-folder"></select><button class="icon-button small" data-action="close-folder" aria-label="关闭文件夹" title="关闭文件夹，保留文章和最近记录">${icon("close")}</button></div><div id="file-tree">${emptyFolder()}</div></section>
     <section class="nav-section recent-section"><div class="section-title"><h2>最近阅读</h2><span id="recent-count"></span></div><div id="recent-files"></div></section>
-    <div class="sidebar-bottom">原文只读，安心阅读。</div>
   </aside>
   <main class="reading-pane" id="reading-pane" tabindex="0" aria-label="正文阅读区">
     <div class="search-bar" id="search-bar" hidden inert><div class="search-controls" role="search" aria-label="文内查找">
       <div class="search-field"><label for="search-input">${icon("search")}<span class="sr-only">搜索正文</span></label><input id="search-input" type="search" placeholder="查找这篇文章…" autocomplete="off" aria-describedby="search-count"><button class="text-button search-clear" data-action="clear-search" aria-label="清除搜索" hidden>清除</button><span id="search-count" role="status"></span></div>
       <div class="search-navigation" role="group" aria-label="搜索结果导航"><button class="icon-button small" data-action="previous-match" title="上一个结果 · Shift+Enter" aria-label="上一个结果" disabled>${icon("up")}</button><button class="icon-button small" data-action="next-match" title="下一个结果 · Enter" aria-label="下一个结果" disabled>${icon("down")}</button></div><button class="icon-button small" data-action="close-search" title="关闭搜索 · Esc" aria-label="关闭搜索">${icon("close")}</button>
     </div></div>
-    <div class="welcome-view" id="welcome"><div class="welcome-book">${icon("book")}</div><h1>留一点时间，<br>给阅读。</h1><p>从一篇 Markdown 开始。<br>文字留在原处，目光回到此刻。</p><button class="primary large" data-action="open">${icon("file")}打开一篇文章<kbd>Ctrl O</kbd></button><div class="welcome-hint">也可以拖入文件，或<button class="text-button" data-action="folder">打开文件夹</button></div></div>
+    <div class="welcome-view" id="welcome"><div class="welcome-book">${icon("book")}</div><h1>打开 Markdown 文件</h1><p>选择本地文件或文件夹，也可以把 .md 文件拖进窗口。</p><div class="welcome-actions"><button class="primary large" data-action="open">${icon("file")}打开文件</button><button class="secondary large" data-action="folder">${icon("folder")}打开文件夹</button></div><dl class="welcome-keys"><dt><kbd>Ctrl</kbd><kbd>O</kbd></dt><dd>打开文件</dd><dt><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>O</kbd></dt><dd>打开文件夹</dd><dt><kbd>Ctrl</kbd><kbd>F</kbd></dt><dd>文内查找</dd></dl></div>
     <article class="prose" id="article" hidden></article>
-    <div class="document-end" id="document-end" hidden><span></span>读到这里，刚刚好。<span></span><button class="text-button" data-action="top">回到开头</button></div>
-    <section id="settings" class="settings" hidden aria-labelledby="settings-title"><button class="text-button back-button" data-action="settings">${icon("previous")}返回阅读</button><h1 id="settings-title" tabindex="-1">阅读与存储</h1><p class="settings-description">调整到适合你的节奏。</p>
+    <div class="document-end" id="document-end" hidden><span></span>全文完<span></span><button class="text-button" data-action="top">回到开头</button></div>
+    <section id="settings" class="settings" hidden aria-labelledby="settings-title"><button class="text-button back-button" data-action="settings">${icon("previous")}返回阅读</button><h1 id="settings-title" tabindex="-1">设置</h1><p class="settings-description">阅读外观、应用更新与数据存储。</p>
       <fieldset class="reading-settings"><legend>阅读</legend>
-        <div class="appearance-setting"><div id="appearance-label">外观<span class="setting-help">为不同的光线选择合适的纸面</span></div>
+        <div class="appearance-setting"><div id="appearance-label">外观<span class="setting-help">浅色、深色，或跟随 Windows 的设置</span></div>
           <div id="theme-setting" class="theme-options" role="radiogroup" aria-labelledby="appearance-label">
             ${[["light", "浅色"], ["dark", "深色"], ["system", "跟随系统"]].map(([value, label]) => `<label class="theme-choice"><input class="sr-only" type="radio" name="theme" value="${value}"><span class="theme-preview theme-preview-${value}" aria-hidden="true"><span class="preview-rail"></span><span class="preview-sheet"><i></i><i></i><i></i></span><span class="theme-check">${icon("check")}</span></span><span class="theme-name">${label}</span></label>`).join("")}
           </div>
@@ -52,13 +60,13 @@ app.innerHTML = `<div class="app-shell">
         <label class="setting-row range-row"><span id="width-label">正文宽度</span><span class="range-setting"><span class="range-scale"><input id="width-setting" type="range" min="560" max="1200" step="20" aria-labelledby="width-label"><span class="range-limits" aria-hidden="true"><span>560</span><span>1200</span></span></span><output id="width-value" for="width-setting"></output></span></label>
       </fieldset>
       <fieldset><legend>应用更新</legend><div id="update-controls"></div></fieldset>
-      <fieldset><legend>应用数据</legend><p class="setting-help">阅读记录、偏好和浏览器缓存使用以下位置。原始文章与附件保持原位。</p><p id="data-root" class="path-value"></p><div id="storage-controls"></div></fieldset>
+      <fieldset><legend>应用数据</legend><p class="setting-help">阅读记录、偏好、解析缓存和浏览器数据保存在此位置。原始文章与附件不会被移动。</p><p id="data-root" class="path-value"></p><div id="storage-controls"></div></fieldset>
       <fieldset><legend>阅读记录</legend><div class="setting-row"><span>最近文件和阅读进度<span class="setting-help">清除后不影响原始文章或阅读偏好</span></span><button class="secondary" data-action="clear-history">清除记录</button></div></fieldset>
       <p class="version" id="version"></p>
     </section>
   </main>
-  <aside class="outline" id="outline-panel" tabindex="-1" aria-label="文章目录"><div class="section-title"><h2>文章目录</h2><span id="heading-count"></span></div><nav id="outline-list"><p class="empty-small">打开文章后，<br>在这里找到方向。</p></nav><div class="outline-bottom"><span>阅读进度</span><span id="read-progress">—</span><div class="progress-track"><div id="progress-fill"></div></div></div></aside>
-  <footer class="statusbar"><span class="status-left">本地文件<span class="status-dot"></span>只读</span><span id="document-status">准备好开始阅读</span><button class="text-button" id="close-document" data-action="close-document" hidden>关闭文章</button></footer>
+  <aside class="outline" id="outline-panel" tabindex="-1" aria-label="文章目录"><div class="section-title"><h2>文章目录</h2><span id="heading-count"></span></div><nav id="outline-list"><p class="empty-small">打开文章后显示目录。</p></nav><div class="outline-bottom"><span>阅读进度</span><span id="read-progress">—</span><div class="progress-track"><div id="progress-fill"></div></div></div></aside>
+  <footer class="statusbar"><span class="status-left" title="MD 只读取文件，不会修改原文">${icon("lock")}只读</span><span id="document-status">未打开文章</span><button class="text-button" id="close-document" data-action="close-document" hidden>关闭文章</button></footer>
   <div class="notice" id="notice" role="status" hidden inert><span id="notice-text"></span><button class="icon-button small" data-action="dismiss-notice" aria-label="关闭提示">${icon("close")}</button></div>
 </div>`;
 
@@ -74,6 +82,41 @@ new MutationObserver((records) => {
 }).observe(app, { subtree: true, attributes: true, attributeFilter: ["open"] });
 
 const pane = document.querySelector<HTMLElement>("#reading-pane")!;
+installScrollbars();
+const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
+
+/** 主题切换使用视图过渡，新配色像一道光从切换按钮一侧扫过整窗；减少动态或不支持时直接切换。 */
+function themeTransition(change: () => void): void {
+  if (reducedMotion.matches || typeof document.startViewTransition !== "function") { change(); return; }
+  const root = document.documentElement; root.dataset.transition = "theme";
+  let changed = false;
+  const transition = document.startViewTransition(() => { changed = true; change(); });
+  // 窗口不可见或新过渡打断时会跳过动画，状态已由 change 生效，无需报错。
+  transition.ready.catch(() => {});
+  // 渲染暂停（窗口被遮挡等）时迟迟拿不到旧画面，400ms 后放弃动画，确保主题一定切换。
+  window.setTimeout(() => { if (!changed) transition.skipTransition(); }, 400);
+  void transition.finished.finally(() => { delete root.dataset.transition; });
+}
+
+/**
+ * 进出设置像翻过一页：纸面本身不动，当前内容先淡出 180ms，再换上新内容。
+ * 设置与欢迎页由 CSS 依次浮现，回到正文时正文与文末一同浮起。连续点击按顺序执行，不会叠加。
+ */
+let turning: Promise<void> = Promise.resolve();
+function turnPage(change: () => void): Promise<void> {
+  const shown = () => [...pane.querySelectorAll<HTMLElement>("#welcome, #article, #document-end, #settings")].filter((element) => !element.hidden);
+  turning = turning.then(async () => {
+    const before = shown();
+    if (!reducedMotion.matches && before.length && typeof before[0].animate === "function") {
+      const fades = before.map((element) => element.animate([{ opacity: 1 }, { opacity: 0, translate: "0 -6px" }], { duration: 180, easing: "cubic-bezier(.55, 0, .75, .1)", fill: "forwards" }));
+      // 渲染暂停时动画不会推进，最多等 260ms 就切换，内容切换从不被动画卡住。
+      await Promise.race([Promise.all(fades.map((fade) => fade.finished.catch(() => {}))), new Promise((resolve) => window.setTimeout(resolve, 260))]);
+      change(); fades.forEach((fade) => fade.cancel());
+      reveal(shown().filter((element) => !before.includes(element) && (element === reader.article || element.id === "document-end")));
+    } else change();
+  });
+  return turning;
+}
 const narrowLayout = matchMedia("(max-width: 950px)");
 const reader = new Reader(document.querySelector<HTMLElement>("#article")!, pane);
 // 界面序号丢弃过期 IPC；后台另有独立取消机制，避免文件切换竞态。
@@ -216,7 +259,7 @@ function withStableOffset(change: () => void): void {
     if (paneOffsetHold === hold) paneOffsetHold = null;
     if (pane.scrollTop !== top) pane.scrollTop = top;
     shell.classList.remove("pane-resizing");
-  }, matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 240);
+  }, matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 560);
 }
 
 /** 合并滑块写入；失败提示持久化状态，不能伪装保存成功。 */
@@ -234,7 +277,7 @@ function renderFolderControls(): void {
   document.querySelector<HTMLElement>("#folder-controls")!.hidden = !folders.length;
   const select = document.querySelector<HTMLSelectElement>("#recent-folder")!;
   select.replaceChildren();
-  const placeholder = document.createElement("option"); placeholder.value = ""; placeholder.textContent = "选择最近文件夹…"; placeholder.disabled = true; select.append(placeholder);
+  const placeholder = document.createElement("option"); placeholder.value = ""; placeholder.textContent = "最近的文件夹…"; placeholder.disabled = true; select.append(placeholder);
   for (const path of folders) {
     const option = document.createElement("option"); option.value = path; option.textContent = displayPath(path); select.append(option);
   }
@@ -250,7 +293,7 @@ function renderFolderView(): void {
   const tree = document.querySelector<HTMLElement>("#file-tree")!;
   const path = !session.state.folderClosed && session.state.folders[0];
   if (path) void renderDirectory(path, tree, epoch);
-  else tree.innerHTML = '<p class="empty-small">尚未打开文件夹。<br>可选择最近目录，或打开其他文件夹。</p>';
+  else tree.innerHTML = emptyFolder(session.state.folders.length > 0);
 }
 
 /** 串行提交目录变更，状态落盘后更新导航；失败保留可重试的当前目录。 */
@@ -271,7 +314,7 @@ async function folderAction(kind: "pick" | "recent" | "close", path?: string): P
 function renderRecent(all = false): void {
   const list = document.querySelector<HTMLElement>("#recent-files")!; list.replaceChildren();
   document.querySelector("#recent-count")!.textContent = session.state.recent.length ? String(session.state.recent.length) : "";
-  if (!session.state.recent.length) { list.innerHTML = '<p class="empty-small">读过的文章会留在这里。</p>'; return; }
+  if (!session.state.recent.length) { list.innerHTML = '<p class="empty-small">打开过的文章会显示在这里。</p>'; return; }
   for (const item of session.state.recent.slice(0, all ? 1000 : 12)) {
     const button = document.createElement("button"); button.className = "file-row"; button.type = "button"; button.innerHTML = icon("file");
     const label = document.createElement("span"); label.textContent = filename(item.path); button.append(label); button.title = displayPath(item.path);
@@ -290,7 +333,7 @@ async function renderDirectory(path: string, container: HTMLElement, epoch: numb
     const entries = await invoke<DirectoryEntry[]>("read_directory", { path });
     if (epoch !== directoryEpoch || !container.isConnected) return;
     container.replaceChildren();
-    if (!entries.length) { container.innerHTML = '<p class="empty-small">这里没有 Markdown 文件。</p>'; return; }
+    if (!entries.length) { container.innerHTML = '<p class="empty-small">此文件夹中没有 Markdown 文件。</p>'; return; }
     for (const entry of entries) {
       const label = document.createElement("span"); label.textContent = entry.name;
       if (entry.directory) {
@@ -321,9 +364,11 @@ function renderOutline(): void {
       void reader.jumpHeading(heading.id);
     }; list.append(button);
   }
+  // 当前章节用一条独立短线标记，切换时沿目录滑到新位置。
+  if (current?.headings.length) list.append(Object.assign(document.createElement("span"), { className: "outline-marker", ariaHidden: "true" }));
   if (!current?.headings.length) list.innerHTML = current
-    ? '<p class="empty-small">这篇文章没有标题目录。</p>'
-    : '<p class="empty-small">打开文章后，<br>在这里找到方向。</p>';
+    ? '<p class="empty-small">这篇文章没有标题。</p>'
+    : '<p class="empty-small">打开文章后显示目录。</p>';
 }
 
 function position(): number { return Math.max(0, Math.min(1, pane.scrollTop / Math.max(1, pane.scrollHeight - pane.clientHeight))); }
@@ -374,6 +419,7 @@ async function openPath(path: string, restore?: ReadingPosition, kind: "open" | 
     await reader.show({ ...metadata, blocks }, () => {
       if (ticket !== request) return;
       performance.measure("md:first-paint", { start, end: performance.now(), detail: timing });
+      if (kind === "open") reveal([reader.article]);
       app.classList.remove("opening"); document.querySelector("#document-status")!.textContent = `${sizeLabel(metadata.bytes)} · 首屏 ${(performance.now() - start).toFixed(0)} ms`;
     });
     if (ticket !== request) return;
@@ -389,6 +435,14 @@ async function openPath(path: string, restore?: ReadingPosition, kind: "open" | 
   } catch (error) {
     if (ticket === request) { restoringPosition = undefined; message(`无法打开文章：${String(error)}`, true, "document"); document.querySelector("#document-status")!.textContent = "打开失败，可重新选择文件"; }
   } finally { if (ticket === request) { if (settingsOpen) restoringPosition = undefined; app.classList.remove("opening"); } }
+}
+
+/** 内容像一张纸放到桌面上：自下 14px 浮起并淡入；只在打开文章或从设置返回时播放，阅读与滚动期间不再有动画。 */
+function reveal(elements: HTMLElement[]): void {
+  if (reducedMotion.matches) return;
+  for (const element of elements) {
+    if (typeof element.animate === "function") element.animate([{ opacity: 0, translate: "0 14px" }, { opacity: 1, translate: "0 0" }], { duration: 640, easing: "cubic-bezier(.22, 1, .36, 1)" });
+  }
 }
 
 /** 滚动只修改进度和目录状态，避免重建正文；磁盘写入另外合并。 */
@@ -475,9 +529,9 @@ function closeDocument(): Promise<void> {
     syncOutlineButton(); document.querySelector<HTMLButtonElement>('[data-action="search"]')!.disabled = true;
     reader.article.hidden = true; document.querySelector<HTMLElement>("#document-end")!.hidden = true;
     document.querySelector<HTMLElement>("#welcome")!.hidden = false; document.querySelector<HTMLElement>("#close-document")!.hidden = true;
-    document.querySelector("#document-name")!.textContent = "开始阅读"; document.querySelector("#document-name")!.removeAttribute("title");
-    document.querySelector("#document-description")!.textContent = "本地 Markdown";
-    document.querySelector("#document-status")!.textContent = "准备好开始阅读";
+    document.querySelector("#document-name")!.textContent = "MD"; document.querySelector("#document-name")!.removeAttribute("title");
+    document.querySelector("#document-description")!.textContent = "Markdown 阅读器";
+    document.querySelector("#document-status")!.textContent = "未打开文章";
     document.querySelector("#read-progress")!.textContent = "—"; document.querySelector<HTMLElement>("#progress-fill")!.style.width = "0";
     if (isTauri()) void getCurrentWindow().setTitle("MD · Markdown 阅读器");
     renderOutline(); renderRecent(); pane.scrollTop = 0; pane.focus({ preventScroll: true });
@@ -522,9 +576,9 @@ async function action(name: string): Promise<void> {
         if (app.classList.contains("outline-drawer")) (document.querySelector<HTMLElement>('.outline-link[aria-current="location"]') ?? document.querySelector<HTMLElement>(".outline-link") ?? document.querySelector<HTMLElement>("#outline-panel"))!.focus({ preventScroll: true });
       } else withStableOffset(() => changePreferences({ outline: !preferences.snapshot.outline }));
     }
-    else if (name === "theme") changePreferences({ theme: document.documentElement.dataset.theme === "dark" ? "light" : "dark" });
-    else if (name === "settings") { if (!settingsOpen) await persistPosition(); toggleSettings(); }
-    else if (name === "top") pane.scrollTo({ top: 0 });
+    else if (name === "theme") themeTransition(() => changePreferences({ theme: document.documentElement.dataset.theme === "dark" ? "light" : "dark" }));
+    else if (name === "settings") { if (!settingsOpen) await persistPosition(); await turnPage(() => toggleSettings()); }
+    else if (name === "top") void glideTo(pane, () => 0);
     else if (name === "dismiss-notice") hideNotice();
     else if (name === "clear-history") { await invoke("clear_history"); await refreshSession(); renderRecent(); renderFolderView(); message("最近记录已清除，原始文章与偏好已保留。"); }
     else if (name === "close-document") await closeDocument();
@@ -551,7 +605,7 @@ document.querySelector("#search-input")!.addEventListener("keydown", (event) => 
 });
 document.querySelector("#theme-setting")!.addEventListener("change", (event) => {
   const choice = event.target as HTMLInputElement;
-  if (choice.checked) changePreferences({ theme: choice.value as Preferences["theme"] });
+  if (choice.checked) themeTransition(() => changePreferences({ theme: choice.value as Preferences["theme"] }));
 });
 document.querySelector("#font-setting")!.addEventListener("input", (event) => changePreferences({ fontSize: Number((event.target as HTMLInputElement).value) }));
 document.querySelector("#width-setting")!.addEventListener("input", (event) => changePreferences({ contentWidth: Number((event.target as HTMLInputElement).value) }));
@@ -593,7 +647,19 @@ reader.onHeading = (id) => {
   previous?.classList.remove("active"); previous?.removeAttribute("aria-current");
   const next = document.querySelector<HTMLElement>(`.outline-link[data-heading="${CSS.escape(id)}"]`);
   next?.classList.add("active"); next?.setAttribute("aria-current", "location");
+  placeOutlineMarker(next);
 };
+
+/** 短线移到当前目录项并保持其可见；首次出现不滑动，直接落在原位。 */
+function placeOutlineMarker(link: HTMLElement | null): void {
+  const marker = document.querySelector<HTMLElement>(".outline-marker");
+  if (!marker) return;
+  marker.classList.toggle("placed", !!link && marker.classList.contains("shown"));
+  marker.classList.toggle("shown", !!link);
+  if (!link) return;
+  marker.style.translate = `0 ${link.offsetTop}px`; marker.style.height = `${link.offsetHeight}px`;
+  glideIntoView(document.querySelector<HTMLElement>("#outline-list")!, link);
+}
 reader.onSearch = (count, index, truncated) => {
   document.querySelector("#search-count")!.textContent = !document.querySelector<HTMLInputElement>("#search-input")!.value ? "" : count ? `${index + 1} / ${count}${truncated ? "+" : ""}` : "无匹配";
   for (const action of ["previous-match", "next-match"]) document.querySelector<HTMLButtonElement>(`[data-action="${action}"]`)!.disabled = count === 0;
