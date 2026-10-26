@@ -1237,12 +1237,11 @@ pub fn run() {
             }
             Ok(())
         })
-        .on_webview_event(|webview, event| {
-            if let tauri::WebviewEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event {
-                accept_paths(webview.app_handle(), paths.iter().cloned());
-            }
-        })
         .on_window_event(|window, event| {
+            // WebviewWindow 的原生拖放会转为窗口事件，落下后沿用路径授权与打开通知。
+            if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event {
+                accept_paths(window.app_handle(), paths.iter().cloned());
+            }
             if let tauri::WindowEvent::CloseRequested { .. } = event {
                 if let Some(updater) = window.app_handle().try_state::<UpdateService>() {
                     let _ = updater.cancel();
