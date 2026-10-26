@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { Preferences } from "./types";
+import { icon } from "./icons";
 
 /** 后台按需统计的实际空间；残留仅来自带归属的迁移记录。 */
 interface StorageInfo {
@@ -30,8 +31,14 @@ export class StorageSettings {
       <div class="section-title storage-heading"><h3>空间占用</h3><button class="text-button" data-storage="refresh">重新统计</button></div>
       <p id="storage-status" class="setting-help" role="status">尚未统计</p><dl id="storage-usage" class="storage-usage"></dl>
       <p id="webview-warning" class="setting-help" hidden>浏览器数据超过建议的 256MiB 提醒阈值，可在退出当前会话后清理。这不是浏览器数据的硬性上限。</p>
-      <label class="setting-row"><span>持久解析缓存<span class="setting-help">关闭后不再读写文章缓存；阅读记录始终保留</span></span><input id="cache-enabled" type="checkbox"></label>
-      <label class="setting-row"><span>应用缓存预算<span class="setting-help">只约束应用解析缓存，不包含浏览器数据</span></span><span class="budget-setting"><input id="cache-budget" type="number" min="0" max="2048" step="16" aria-label="应用缓存预算 MiB"> MiB</span></label>
+      <label class="setting-row"><span><span id="cache-enabled-label">持久解析缓存</span><span class="setting-help" id="cache-enabled-help">关闭后不再读写文章缓存；阅读记录始终保留</span></span><span class="switch-control"><span class="switch-state" aria-hidden="true"></span><input id="cache-enabled" class="switch-input" type="checkbox" role="switch" aria-labelledby="cache-enabled-label" aria-describedby="cache-enabled-help"><span class="switch-track" aria-hidden="true"></span></span></label>
+      <div class="setting-row cache-budget-row"><span><span id="cache-budget-label">应用缓存预算</span><span class="setting-help" id="cache-budget-help">只约束应用解析缓存，不包含浏览器数据</span></span>
+        <div class="budget-setting"><div class="number-stepper" role="group" aria-labelledby="cache-budget-label">
+          <button class="stepper-button" type="button" data-storage="budget-decrease" title="减少 16 MiB" aria-label="减少缓存预算">${icon("minus")}</button>
+          <label class="budget-value" for="cache-budget"><input id="cache-budget" type="number" min="0" max="2048" step="16" required aria-labelledby="cache-budget-label" aria-describedby="cache-budget-help cache-budget-range"><span class="budget-unit">MiB</span></label>
+          <button class="stepper-button" type="button" data-storage="budget-increase" title="增加 16 MiB" aria-label="增加缓存预算">${icon("plus")}</button>
+        </div><span id="cache-budget-range" class="budget-limit">0–2048 MiB · 每次 16 MiB</span><p id="cache-budget-error" class="control-error" role="alert" hidden>请输入 0–2048 范围内、以 16 为步长的 MiB 数值。</p></div>
+      </div>
       <div class="storage-actions"><button class="secondary" data-storage="cache">清理应用缓存…</button><button class="secondary" data-storage="webview">清理浏览器数据…</button></div>
       <div id="migration-residual" class="migration-residual" hidden><h3>待清理的旧数据</h3><p id="residual-path" class="path-value"></p><p id="residual-size" class="setting-help"></p><button class="secondary" data-storage="retry">重试清理</button></div>
       <dialog id="maintenance-dialog" aria-labelledby="maintenance-title" data-phase="ready" inert><h2 id="maintenance-title"></h2><p id="maintenance-description"></p><p id="maintenance-target" class="path-value" hidden></p><p id="maintenance-status" role="status"></p><div class="dialog-actions"><button class="secondary" data-storage="cancel" autofocus>取消</button><button class="primary" data-storage="confirm" id="maintenance-confirm"></button></div></dialog>`;
@@ -42,8 +49,11 @@ export class StorageSettings {
     container.querySelector("#cache-enabled")!.addEventListener("change", (event) => this.updatePreferences({ persistentCache: (event.target as HTMLInputElement).checked }));
     container.querySelector("#cache-budget")!.addEventListener("change", (event) => {
       const input = event.target as HTMLInputElement;
-      if (!input.checkValidity()) { input.reportValidity(); return; }
-      this.updatePreferences({ cacheMib: Number(input.value) });
+      if (this.syncBudget()) this.updatePreferences({ cacheMib: input.valueAsNumber });
+    });
+    // 合法值恢复时立即解锁步进；输入尚未完成时不逐字弹出校验错误。
+    container.querySelector("#cache-budget")!.addEventListener("input", (event) => {
+      if ((event.target as HTMLInputElement).validity.valid) this.syncBudget();
     });
     container.querySelector("#maintenance-dialog")!.addEventListener("cancel", (event) => {
       event.preventDefault();
@@ -56,6 +66,7 @@ export class StorageSettings {
     this.viewActive = true; this.updateMaintenanceButtons();
     this.container.querySelector<HTMLInputElement>("#cache-enabled")!.checked = this.getPreferences().persistentCache;
     this.container.querySelector<HTMLInputElement>("#cache-budget")!.value = String(this.getPreferences().cacheMib);
+    this.syncBudget();
     const epoch = ++this.epoch;
     this.container.querySelector("#storage-status")!.textContent = "正在后台统计，可继续调整阅读设置…";
     try {
@@ -76,6 +87,18 @@ export class StorageSettings {
   deactivate(): void {
     this.viewActive = false; this.epoch++; void invoke("cancel_storage_stats").catch(() => {});
     void this.cancelMaintenance().catch((error) => this.message(`取消迁移目标未完成：${String(error)}`, true));
+  }
+
+  /** 直接输入与步进共用原生范围校验，就地说明错误并同步边界按钮，空值不能被保存为零。 */
+  private syncBudget(): boolean {
+    const input = this.container.querySelector<HTMLInputElement>("#cache-budget")!;
+    const valid = input.checkValidity();
+    input.setAttribute("aria-invalid", String(!valid));
+    input.setAttribute("aria-describedby", `cache-budget-help cache-budget-range${valid ? "" : " cache-budget-error"}`);
+    this.container.querySelector<HTMLElement>("#cache-budget-error")!.hidden = valid;
+    this.container.querySelector<HTMLButtonElement>('[data-storage="budget-decrease"]')!.disabled = !valid || input.valueAsNumber <= Number(input.min);
+    this.container.querySelector<HTMLButtonElement>('[data-storage="budget-increase"]')!.disabled = !valid || input.valueAsNumber >= Number(input.max);
+    return valid;
   }
 
   /** 选择器与确认操作各自串行；提交原生维护后不再提供无效的取消入口。 */
@@ -103,6 +126,13 @@ export class StorageSettings {
   /** 确认界面明确列出影响范围，迁移目标由原生选择器授权后才可提交。 */
   private async action(action: string): Promise<void> {
     if (!this.viewActive) return;
+    if (action === "budget-decrease" || action === "budget-increase") {
+      if (!this.syncBudget()) return;
+      const input = this.container.querySelector<HTMLInputElement>("#cache-budget")!;
+      if (action === "budget-increase") input.stepUp(); else input.stepDown();
+      if (this.syncBudget()) this.updatePreferences({ cacheMib: input.valueAsNumber });
+      return;
+    }
     const dialog = this.container.querySelector<HTMLDialogElement>("#maintenance-dialog")!;
     const title = this.container.querySelector("#maintenance-title")!;
     const description = this.container.querySelector("#maintenance-description")!;

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { StorageSettings } from "../src/storage-settings";
+import type { Preferences } from "../src/types";
 
 const native = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke }));
@@ -8,6 +9,7 @@ let view: StorageSettings;
 let container: HTMLElement;
 let beforeMaintenance: Mock<() => Promise<void>>;
 let message: Mock<(text: string, persistent?: boolean) => void>;
+let updatePreferences: Mock<(patch: Partial<Preferences>) => void>;
 const info = { usage: { stateBytes: 0, cacheBytes: 1024, webviewBytes: 2048, logsBytes: 0, tempBytes: 0, totalBytes: 3072, freeBytes: 1024 ** 3 }, residual: null, notice: null };
 const preferences = { theme: "light" as const, fontSize: 18, contentWidth: 780, sidebar: true, outline: true, persistentCache: true, cacheMib: 256 };
 const settle = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
@@ -21,11 +23,60 @@ beforeEach(async () => {
   // jsdom 只替换对话框的原生展示边界，实际控制器和 DOM 事件仍参与测试。
   native.invoke.mockImplementation(async name => name === "get_storage_info" ? structuredClone(info) : null);
   beforeMaintenance = vi.fn<() => Promise<void>>().mockResolvedValue(undefined); message = vi.fn();
-  view = new StorageSettings(container, () => preferences, vi.fn(), beforeMaintenance, message);
+  updatePreferences = vi.fn();
+  view = new StorageSettings(container, () => preferences, updatePreferences, beforeMaintenance, message);
   Object.assign(dialog(), { showModal(this: HTMLDialogElement) { this.open = true; }, close(this: HTMLDialogElement) { this.open = false; } });
   await view.activate();
 });
 afterEach(() => { vi.restoreAllMocks(); });
+
+describe("缓存设置控件", () => {
+  it("缓存开关保留选中状态与开关语义，每次切换提交实际偏好", () => {
+    const input = container.querySelector<HTMLInputElement>("#cache-enabled")!;
+    expect(input.getAttribute("role")).toBe("switch"); expect(input.checked).toBe(true);
+    input.click(); expect(input.checked).toBe(false); expect(updatePreferences).toHaveBeenLastCalledWith({ persistentCache: false });
+    input.click(); expect(input.checked).toBe(true); expect(updatePreferences).toHaveBeenLastCalledWith({ persistentCache: true });
+  });
+
+  it("预算按钮按16 MiB步进并在上下界停用，直接输入仍可保存", async () => {
+    const input = container.querySelector<HTMLInputElement>("#cache-budget")!;
+    const decrease = container.querySelector<HTMLButtonElement>('[data-storage="budget-decrease"]');
+    const increase = container.querySelector<HTMLButtonElement>('[data-storage="budget-increase"]');
+    expect(decrease).not.toBeNull(); expect(increase).not.toBeNull();
+    increase!.click(); await settle(); expect(input.value).toBe("272");
+    expect(updatePreferences).toHaveBeenLastCalledWith({ cacheMib: 272 });
+    decrease!.click(); await settle(); expect(input.value).toBe("256");
+    for (const value of ["0", "2048"]) {
+      input.value = value; input.dispatchEvent(new Event("change", { bubbles: true }));
+      expect(updatePreferences).toHaveBeenLastCalledWith({ cacheMib: Number(value) });
+      expect(decrease!.disabled).toBe(value === "0"); expect(increase!.disabled).toBe(value === "2048");
+    }
+    increase!.click(); expect(input.value).toBe("2048");
+    decrease!.click(); await settle(); expect(input.value).toBe("2032");
+  });
+
+  it("无效预算就地说明且不保存，修正后清除错误而不弹原生校验提示", () => {
+    const input = container.querySelector<HTMLInputElement>("#cache-budget")!;
+    const error = container.querySelector<HTMLElement>("#cache-budget-error");
+    const report = vi.spyOn(input, "reportValidity");
+    expect(error).not.toBeNull();
+    expect(input.getAttribute("aria-describedby")!.split(/\s+/)).not.toContain("cache-budget-error");
+    for (const value of ["", "-16", "17", "2064"]) {
+      input.value = value; input.dispatchEvent(new Event("change", { bubbles: true }));
+      expect(input.getAttribute("aria-invalid")).toBe("true"); expect(error!.hidden).toBe(false);
+      expect(input.getAttribute("aria-describedby")!.split(/\s+/)).toContain("cache-budget-error");
+      expect(updatePreferences).not.toHaveBeenCalled();
+    }
+    input.value = "512"; input.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(input.getAttribute("aria-invalid")).toBe("false"); expect(error!.hidden).toBe(true);
+    expect(input.getAttribute("aria-describedby")!.split(/\s+/)).not.toContain("cache-budget-error");
+    expect(container.querySelector<HTMLButtonElement>('[data-storage="budget-increase"]')!.disabled).toBe(false);
+    expect(updatePreferences).not.toHaveBeenCalled();
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(updatePreferences).toHaveBeenCalledExactlyOnceWith({ cacheMib: 512 });
+    expect(report).not.toHaveBeenCalled();
+  });
+});
 
 describe("存储维护的异步确认边界", () => {
   it("维护状态按准备、执行、失败及重试推进，忙碌标记和可交互状态同时恢复", async () => {

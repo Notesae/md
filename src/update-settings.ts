@@ -25,7 +25,7 @@ export class UpdateSettings {
   constructor(private readonly container: HTMLElement, private readonly beforeInstall: () => Promise<void>) {
     container.innerHTML = [
       '<div class="setting-row update-current"><span>当前版本 <strong id="update-current-version">—</strong><span class="setting-help">免登录获取公开版本，只在你点击后检查。</span></span><button class="secondary" data-update="release">公开发布页</button></div>',
-      '<label class="setting-row update-channel"><span>更新通道<span class="setting-help" id="update-channel-help">每次启动默认仅稳定版。</span></span><select id="update-channel" aria-describedby="update-channel-help"><option value="stable">仅稳定版</option><option value="preview">稳定版与预发布</option></select></label>',
+      '<div class="setting-row update-channel"><span id="update-channel-label">更新通道</span><p class="setting-help" id="update-channel-help">每次启动默认仅稳定版。</p><div id="update-channel" class="segmented-options" role="radiogroup" aria-labelledby="update-channel-label" aria-describedby="update-channel-help"><label class="segmented-option"><input class="sr-only" type="radio" name="update-channel" value="stable" checked><span>仅稳定版</span></label><label class="segmented-option"><input class="sr-only" type="radio" name="update-channel" value="preview"><span>稳定版与预发布</span></label></div></div>',
       '<div class="update-result" data-phase="idle"><p id="update-status" role="status">尚未检查更新。</p><p id="update-retry-at" class="setting-help" hidden></p>',
       '<section id="update-offer" aria-labelledby="update-version-title" hidden><h3 id="update-version-title"></h3><p id="update-package" class="setting-help"></p><details><summary>版本说明</summary><p id="update-notes"></p></details><details id="update-integrity" hidden><summary>完整性校验</summary><p>已核对公开发布的 SHA-256 和构建记录。这不代表 Windows 代码签名。</p><code id="update-sha"></code></details></section>',
       '<div id="update-transfer" hidden><progress id="update-progress" aria-label="安装包下载进度" max="1" value="0"></progress><p id="update-progress-label" class="setting-help"></p></div>',
@@ -37,11 +37,16 @@ export class UpdateSettings {
       const action = (event.target as Element).closest<HTMLElement>("[data-update]")?.dataset.update;
       if (action) void this.action(action);
     });
-    container.querySelector("#update-channel")!.addEventListener("change", () => {
-      this.channel = container.querySelector<HTMLSelectElement>("#update-channel")!.value === "preview" ? "preview" : "stable";
+    container.querySelector("#update-channel")!.addEventListener("change", (event) => {
+      const choice = event.target as HTMLInputElement;
+      if (!choice.checked || choice.disabled) return;
+      const wasFocused = document.activeElement === choice;
+      this.channel = choice.value === "preview" ? "preview" : "stable";
       this.cancelConfirmation();
       void this.call("cancel_update").then((ok) => {
         if (ok && this.state) { this.state = { ...this.state, phase: "idle", offer: null, message: "通道已切换，请点击检查更新。" }; this.render(); }
+        // 临时禁用可使焦点回到页面，仅在用户尚未转移焦点且设置仍打开时归还。
+        if (wasFocused && this.active && choice.isConnected && !choice.disabled && document.activeElement === document.body) choice.focus({ preventScroll: true });
       });
     });
     this.dialog.addEventListener("cancel", (event) => { event.preventDefault(); this.cancelConfirmation(); });
@@ -81,7 +86,10 @@ export class UpdateSettings {
     const state = this.state, busy = !!state && working(state), offer = state?.offer, ready = state?.phase === "ready";
     const limited = !!state?.retryAt && state.retryAt * 1000 > Date.now();
     this.container.querySelector("#update-current-version")!.textContent = state?.currentVersion ?? "—";
-    this.container.querySelector<HTMLSelectElement>("#update-channel")!.disabled = busy || ready || this.requestPending;
+    // 两个选项共享同一忙碌边界，刷新状态不能把本次会话选择重置成默认通道。
+    this.container.querySelectorAll<HTMLInputElement>("#update-channel input").forEach((choice) => {
+      choice.checked = choice.value === this.channel; choice.disabled = busy || ready || this.requestPending;
+    });
     this.container.querySelector("#update-channel-help")!.textContent = this.channel === "stable" ? "每次启动默认仅稳定版。" : "包含测试版本，可能尚未完成验证；本次会话内有效。";
     const status = this.container.querySelector("#update-status")!;
     status.setAttribute("role", state?.phase === "error" ? "alert" : "status"); status.textContent = state?.message ?? "尚未检查更新。";
@@ -109,9 +117,11 @@ export class UpdateSettings {
   }
   private cancelConfirmation(): void {
     if (this.committed) return;
+    // 只有关闭实际确认框才归还焦点，切换通道不额外抢走单选控件的焦点。
+    const wasOpen = this.dialog.open;
     ++this.intent; this.preparing = false; this.dialog.close(); this.dialog.inert = true;
     this.container.querySelector<HTMLButtonElement>('[data-update="confirm"]')!.disabled = false;
-    if (this.active) this.container.querySelector<HTMLButtonElement>('[data-update="primary"]')!.focus();
+    if (wasOpen && this.active) this.container.querySelector<HTMLButtonElement>('[data-update="primary"]')!.focus();
   }
   private async action(action: string): Promise<void> {
     if (action === "release") { try { await invoke("open_update_release"); } catch (error) { this.error(String(error)); } return; }

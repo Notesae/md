@@ -24,22 +24,56 @@ beforeEach(() => {
   });
   view = new UpdateSettings(host, save);
 });
-afterEach(() => { view.deactivate(); host.remove(); vi.clearAllTimers(); vi.useRealTimers(); });
+afterEach(() => { view.deactivate(); host.remove(); document.body.removeAttribute("tabindex"); vi.clearAllTimers(); vi.useRealTimers(); });
 
 describe("公开更新设置的用户意图与确认边界", () => {
   it("打开设置只读本地状态，默认稳定通道，不自动检查、下载或安装", async () => {
     await view.activate(); await vi.advanceTimersByTimeAsync(3000);
     expect(invoke.mock.calls.map(([name]) => name)).toEqual(["get_update_status"]);
-    expect(host.querySelector<HTMLSelectElement>("select")!.value).toBe("stable");
+    expect(host.querySelectorAll('#update-channel input[type="radio"]')).toHaveLength(2);
+    expect(host.querySelector<HTMLInputElement>('#update-channel input:checked')!.value).toBe("stable");
     button("primary").click(); await settle();
     expect(invoke).toHaveBeenCalledWith("check_for_updates", { channel: "stable" });
   });
   it("显式选择预发布后仍需手动检查，旧候选不再显示", async () => {
     await show({ phase: "available", offer });
-    const select = host.querySelector<HTMLSelectElement>("select")!; select.value = "preview"; select.dispatchEvent(new Event("change")); await settle();
+    const preview = host.querySelector<HTMLInputElement>('input[name="update-channel"][value="preview"]')!;
+    preview.focus(); preview.click(); await settle();
+    expect(preview.checked).toBe(true); expect(document.activeElement).toBe(preview);
     expect(host.querySelector<HTMLElement>("#update-offer")!.hidden).toBe(true);
     expect(invoke.mock.calls.filter(([name]) => name === "check_for_updates")).toHaveLength(0);
     button("primary").click(); await settle(); expect(invoke).toHaveBeenCalledWith("check_for_updates", { channel: "preview" });
+  });
+  it("检查、下载和待安装期间锁定两个通道，取消旧候选完成后才恢复选择", async () => {
+    const choices = () => [...host.querySelectorAll<HTMLInputElement>('#update-channel input')];
+    expect(choices()).toHaveLength(2);
+    for (const phase of ["checking", "downloading", "ready"] as const) {
+      await show({ phase, offer });
+      expect(choices().every(choice => choice.disabled)).toBe(true);
+      choices()[1].click(); expect(choices()[0].checked).toBe(true);
+    }
+    await show({ phase: "idle", offer: null }); const pending = deferred();
+    invoke.mockImplementation(async (name: string) => { if (name === "cancel_update") await pending.promise; return state; });
+    choices()[1].click(); expect(choices().every(choice => choice.disabled)).toBe(true);
+    pending.resolve(); await settle();
+    expect(choices().every(choice => !choice.disabled)).toBe(true); expect(choices()[1].checked).toBe(true);
+    expect(invoke.mock.calls.filter(([name]) => name === "check_for_updates")).toHaveLength(0);
+  });
+  it("通道请求完成只恢复丢失的焦点，不覆盖用户转移或离开设置的意图", async () => {
+    await view.activate();
+    document.body.tabIndex = -1;
+    for (const mode of ["restore", "moved", "inactive"]) {
+      const pending = deferred();
+      invoke.mockImplementation(async (name: string) => { if (name === "cancel_update") await pending.promise; return state; });
+      const choice = host.querySelector<HTMLInputElement>('#update-channel input:not(:checked)')!;
+      choice.focus(); choice.click();
+      // 显式模拟控件禁用期间焦点退回页面，不依赖 jsdom 自动执行失焦。
+      document.body.focus();
+      if (mode === "moved") button("release").focus();
+      if (mode === "inactive") view.deactivate();
+      pending.resolve(); await settle();
+      expect(document.activeElement).toBe(mode === "restore" ? choice : mode === "moved" ? button("release") : document.body);
+    }
   });
   it("远程版本说明以纯文本呈现，进度使用实际下载字节", async () => {
     await show({ phase: "downloading", offer, downloaded: 2 * 1024 ** 2, total: offer.bytes });
